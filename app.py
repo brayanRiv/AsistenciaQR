@@ -57,6 +57,10 @@ def token_requerido(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
+@app.route('/')
+def index():
+    return "¡Hola, mundo!"
+
 @app.route('/registro', methods=['POST'])
 def registro():
     data = request.get_json()
