@@ -61,7 +61,7 @@ class Asistencia(db.Model):
     asistencia_id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('usuarios.user_id'), nullable=False)
     aula_id = db.Column(db.Integer, db.ForeignKey('aulas.aula_id'), nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.datetime.now(datetime.UTC), nullable=False)
     estado = db.Column(db.String(50), nullable=False)  # Por ejemplo: 'Presente', 'Ausente'
 
 
@@ -82,7 +82,7 @@ class Reporte(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('usuarios.user_id'), nullable=False)
     titulo = db.Column(db.String(150), nullable=False)
     descripcion = db.Column(db.Text, nullable=False)
-    fecha = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
+    fecha = db.Column(db.DateTime, default=datetime.datetime.now(datetime.UTC), nullable=False)
 
 
 # Decorador para rutas protegidas
@@ -157,7 +157,7 @@ def login():
 
         token = pyjwt.encode({
             'user_id': usuario.user_id,
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+            'exp': datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=24)
         }, app.config['SECRET_KEY'], algorithm="HS256")
 
         return jsonify({'token': token}), 200
