@@ -118,13 +118,5 @@ def login():
 def protegido(current_user):
     return jsonify({'mensaje': f'Hola {current_user.nombre}, tienes acceso a esta ruta protegida!'}), 200
 
-@app.route('/check_jwt', methods=['GET'])
-def check_jwt():
-    info = {
-        "jwt_file": pyjwt.__file__,
-        "jwt_dir": dir(pyjwt)
-    }
-    return jsonify(info), 200
-
 if __name__ == '__main__':
     app.run(debug=True)
