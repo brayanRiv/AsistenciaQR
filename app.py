@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
-import jwt
+import jwt as pyjwt  # Importar con alias para evitar conflictos
 import datetime
 from functools import wraps
 
@@ -46,11 +46,11 @@ def token_requerido(f):
         if not token:
             return jsonify({'mensaje': 'Token está ausente!'}), 401
         try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            data = pyjwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = Usuario.query.filter_by(user_id=data['user_id']).first()
-        except jwt.ExpiredSignatureError:
+        except pyjwt.ExpiredSignatureError:
             return jsonify({'mensaje': 'Token expirado!'}), 401
-        except jwt.InvalidTokenError:
+        except pyjwt.InvalidTokenError:
             return jsonify({'mensaje': 'Token inválido!'}), 401
         except Exception as e:
             app.logger.error(f"Error al decodificar el token: {str(e)}")
@@ -103,7 +103,7 @@ def login():
         if not usuario or not usuario.check_password(password):
             return jsonify({'mensaje': 'Credenciales inválidas!'}), 401
 
-        token = jwt.encode({
+        token = pyjwt.encode({
             'user_id': usuario.user_id,
             'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
         }, app.config['SECRET_KEY'], algorithm="HS256")
