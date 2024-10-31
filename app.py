@@ -1,8 +1,8 @@
-import os
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
+import os
 import jwt
 import datetime
 from functools import wraps
@@ -12,15 +12,11 @@ app = Flask(__name__)
 # Configuración de la base de datos
 database_url = os.environ.get('DATABASE_URL')
 if database_url and database_url.startswith("postgres://"):
-    # Reemplaza 'postgres://' con 'postgresql://'
     database_url = database_url.replace("postgres://", "postgresql://", 1)
-elif not database_url:
-    # Usar SQLite para el entorno local
-    database_url = 'sqlite:///local.db'
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tu_secreto')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -46,20 +42,23 @@ def token_requerido(f):
     def decorated(*args, **kwargs):
         token = None
         if 'Authorization' in request.headers:
-            token = request.headers['Authorization'].split(" ")[1]
+            try:
+                token = request.headers['Authorization'].split(" ")[1]
+            except IndexError:
+                return jsonify({'mensaje': 'Formato de token inválido!'}), 401
         if not token:
             return jsonify({'mensaje': 'Token está ausente!'}), 401
         try:
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = Usuario.query.filter_by(user_id=data['user_id']).first()
-        except:
+            if not current_user:
+                return jsonify({'mensaje': 'Usuario no encontrado!'}), 401
+        except jwt.ExpiredSignatureError:
+            return jsonify({'mensaje': 'Token expirado!'}), 401
+        except jwt.InvalidTokenError:
             return jsonify({'mensaje': 'Token inválido!'}), 401
         return f(current_user, *args, **kwargs)
     return decorated
-
-@app.route('/')
-def index():
-    return "¡Hola, mundo!"
 
 @app.route('/registro', methods=['POST'])
 def registro():
