@@ -16,7 +16,7 @@ if database_url and database_url.startswith("postgres://"):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tu_secreto')
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -42,70 +42,76 @@ def token_requerido(f):
     def decorated(*args, **kwargs):
         token = None
         if 'Authorization' in request.headers:
-            try:
-                token = request.headers['Authorization'].split(" ")[1]
-            except IndexError:
-                return jsonify({'mensaje': 'Formato de token inválido!'}), 401
+            token = request.headers['Authorization'].split(" ")[1]
         if not token:
             return jsonify({'mensaje': 'Token está ausente!'}), 401
         try:
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = Usuario.query.filter_by(user_id=data['user_id']).first()
-            if not current_user:
-                return jsonify({'mensaje': 'Usuario no encontrado!'}), 401
         except jwt.ExpiredSignatureError:
             return jsonify({'mensaje': 'Token expirado!'}), 401
         except jwt.InvalidTokenError:
             return jsonify({'mensaje': 'Token inválido!'}), 401
+        except Exception as e:
+            app.logger.error(f"Error al decodificar el token: {str(e)}")
+            return jsonify({'mensaje': 'Error interno del servidor!'}), 500
         return f(current_user, *args, **kwargs)
     return decorated
 
 @app.route('/registro', methods=['POST'])
 def registro():
-    data = request.get_json()
-    nombre = data.get('nombre')
-    apellido = data.get('apellido')
-    email = data.get('email')
-    password = data.get('password')
-    rol = data.get('rol')
+    try:
+        data = request.get_json()
+        nombre = data.get('nombre')
+        apellido = data.get('apellido')
+        email = data.get('email')
+        password = data.get('password')
+        rol = data.get('rol')
 
-    if not all([nombre, apellido, email, password, rol]):
-        return jsonify({'mensaje': 'Faltan datos!'}), 400
+        if not all([nombre, apellido, email, password, rol]):
+            return jsonify({'mensaje': 'Faltan datos!'}), 400
 
-    if Usuario.query.filter_by(email=email).first():
-        return jsonify({'mensaje': 'El email ya está registrado!'}), 400
+        if Usuario.query.filter_by(email=email).first():
+            return jsonify({'mensaje': 'El email ya está registrado!'}), 400
 
-    nuevo_usuario = Usuario(
-        nombre=nombre,
-        apellido=apellido,
-        email=email,
-        rol=rol
-    )
-    nuevo_usuario.set_password(password)
-    db.session.add(nuevo_usuario)
-    db.session.commit()
+        nuevo_usuario = Usuario(
+            nombre=nombre,
+            apellido=apellido,
+            email=email,
+            rol=rol
+        )
+        nuevo_usuario.set_password(password)
+        db.session.add(nuevo_usuario)
+        db.session.commit()
 
-    return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+        return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+    except Exception as e:
+        app.logger.error(f"Error en registro: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
 
-    if not all([email, password]):
-        return jsonify({'mensaje': 'Faltan datos!'}), 400
+        if not all([email, password]):
+            return jsonify({'mensaje': 'Faltan datos!'}), 400
 
-    usuario = Usuario.query.filter_by(email=email).first()
-    if not usuario or not usuario.check_password(password):
-        return jsonify({'mensaje': 'Credenciales inválidas!'}), 401
+        usuario = Usuario.query.filter_by(email=email).first()
+        if not usuario or not usuario.check_password(password):
+            return jsonify({'mensaje': 'Credenciales inválidas!'}), 401
 
-    token = jwt.encode({
-        'user_id': usuario.user_id,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-    }, app.config['SECRET_KEY'], algorithm="HS256")
+        token = jwt.encode({
+            'user_id': usuario.user_id,
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        }, app.config['SECRET_KEY'], algorithm="HS256")
 
-    return jsonify({'token': token}), 200
+        return jsonify({'token': token}), 200
+    except Exception as e:
+        app.logger.error(f"Error en login: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
 @app.route('/protegido', methods=['GET'])
 @token_requerido
