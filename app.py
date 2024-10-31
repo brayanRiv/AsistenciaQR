@@ -1,8 +1,8 @@
+import os
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
-import os
 import jwt
 import datetime
 from functools import wraps
@@ -12,7 +12,11 @@ app = Flask(__name__)
 # Configuración de la base de datos
 database_url = os.environ.get('DATABASE_URL')
 if database_url and database_url.startswith("postgres://"):
+    # Reemplaza 'postgres://' con 'postgresql://'
     database_url = database_url.replace("postgres://", "postgresql://", 1)
+elif not database_url:
+    # Usar SQLite para el entorno local
+    database_url = 'sqlite:///local.db'
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
