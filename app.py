@@ -22,7 +22,7 @@ migrate = Migrate(app, db)
 
 # Modelo de Usuario
 class Usuario(db.Model):
-    __tablename__ = 'Usuarios'
+    __tablename__ = 'usuario'
     user_id = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.String(100), nullable=False)
     apellido = db.Column(db.String(100), nullable=False)
@@ -44,7 +44,7 @@ class Usuario(db.Model):
 
 # Modelo de Aulas
 class Aula(db.Model):
-    __tablename__ = 'Aulas'
+    __tablename__ = 'aulas'
     aula_id = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.String(100), nullable=False)
     turno = db.Column(db.String(50), nullable=False)
@@ -54,7 +54,7 @@ class Aula(db.Model):
 
 # Modelo de Asistencias
 class Asistencia(db.Model):
-    __tablename__ = 'Asistencias'
+    __tablename__ = 'asistencias'
     asistencia_id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('Usuarios.user_id'), nullable=False)
     aula_id = db.Column(db.Integer, db.ForeignKey('Aulas.aula_id'), nullable=False)
@@ -64,7 +64,7 @@ class Asistencia(db.Model):
 
 # Modelo de SesionesQR
 class SesionQR(db.Model):
-    __tablename__ = 'SesionesQR'
+    __tablename__ = 'sesionesqr'
     sesion_id = db.Column(db.Integer, primary_key=True)
     codigo_qr = db.Column(db.String(255), unique=True, nullable=False)
     aula_id = db.Column(db.Integer, db.ForeignKey('Aulas.aula_id'), nullable=False)
@@ -74,7 +74,7 @@ class SesionQR(db.Model):
 
 # Modelo de Reportes
 class Reporte(db.Model):
-    __tablename__ = 'Reportes'
+    __tablename__ = 'reportes'
     reporte_id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('Usuarios.user_id'), nullable=False)
     descripcion = db.Column(db.Text, nullable=False)
@@ -82,7 +82,7 @@ class Reporte(db.Model):
 
 # Modelo de Leaderboard
 class Leaderboard(db.Model):
-    __tablename__ = 'Leaderboard'
+    __tablename__ = 'leaderboard'
     leaderboard_id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('Usuarios.user_id'), unique=True, nullable=False)
     puntos = db.Column(db.Integer, default=0)
@@ -111,6 +111,9 @@ def token_requerido(f):
     return decorated
 
 # Rutas CRUD para Aulas
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({'mensaje': 'Bienvenido a la API de Asistencia QR!'}), 200
 
 @app.route('/aulas', methods=['POST'])
 @token_requerido
