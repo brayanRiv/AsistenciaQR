@@ -123,7 +123,6 @@ def token_requerido(f):
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({'mensaje': 'Bienvenido a la API de Asistencia QR!'}), 200
-
 # Ruta de registro
 @app.route('/registro', methods=['POST'])
 def registro():
