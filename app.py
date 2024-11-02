@@ -1,11 +1,15 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, request, jsonify
-from flask_migrate import Migrate
-from functools import wraps
-import os
-import jwt as pyjwt
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
+import os
+import jwt as pyjwt  # Importar con alias para evitar conflictos
 import datetime
+from functools import wraps
+
 app = Flask(__name__)
 
 # Configuración de la base de datos
@@ -20,7 +24,6 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tu_secreto')
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
-# Modelo de Usuario
 class Usuario(db.Model):
     __tablename__ = 'usuario'
     user_id = db.Column(db.Integer, primary_key=True)
@@ -29,7 +32,7 @@ class Usuario(db.Model):
     email = db.Column(db.String(150), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     rol = db.Column(db.String(50), nullable=False)
-    fecha_registro = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    fecha_registro = db.Column(db.DateTime, default=datetime.datetime.now(datetime.UTC))
     ultimo_login = db.Column(db.DateTime)
 
     asistencias = db.relationship('Asistencia', backref='usuario', lazy=True)
@@ -56,8 +59,8 @@ class Aula(db.Model):
 class Asistencia(db.Model):
     __tablename__ = 'asistencias'
     asistencia_id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('Usuarios.user_id'), nullable=False)
-    aula_id = db.Column(db.Integer, db.ForeignKey('Aulas.aula_id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('usuario.user_id'), nullable=False)
+    aula_id = db.Column(db.Integer, db.ForeignKey('aulas.aula_id'), nullable=False)
     fecha_asistencia = db.Column(db.Date, nullable=False)
     hora_entrada = db.Column(db.Time, nullable=False)
     hora_salida = db.Column(db.Time)
@@ -67,7 +70,7 @@ class SesionQR(db.Model):
     __tablename__ = 'sesionesqr'
     sesion_id = db.Column(db.Integer, primary_key=True)
     codigo_qr = db.Column(db.String(255), unique=True, nullable=False)
-    aula_id = db.Column(db.Integer, db.ForeignKey('Aulas.aula_id'), nullable=False)
+    aula_id = db.Column(db.Integer, db.ForeignKey('aulas.aula_id'), nullable=False)
     fecha_sesion = db.Column(db.Date, nullable=False)
     hora_inicio = db.Column(db.Time, nullable=False)
     hora_fin = db.Column(db.Time, nullable=False)
@@ -76,17 +79,18 @@ class SesionQR(db.Model):
 class Reporte(db.Model):
     __tablename__ = 'reportes'
     reporte_id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('Usuarios.user_id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('usuario.user_id'), nullable=False)
     descripcion = db.Column(db.Text, nullable=False)
-    fecha_reporte = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    fecha_reporte = db.Column(db.DateTime, default=datetime.datetime.now(datetime.UTC))
 
 # Modelo de Leaderboard
 class Leaderboard(db.Model):
     __tablename__ = 'leaderboard'
     leaderboard_id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('Usuarios.user_id'), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('usuario.user_id'), unique=True, nullable=False)
     puntos = db.Column(db.Integer, default=0)
-    fecha_actualizacion = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    fecha_actualizacion = db.Column(db.DateTime, default=datetime.datetime.now(datetime.UTC))
+
 
 # Decorador para rutas protegidas
 def token_requerido(f):
@@ -94,12 +98,17 @@ def token_requerido(f):
     def decorated(*args, **kwargs):
         token = None
         if 'Authorization' in request.headers:
-            token = request.headers['Authorization'].split(" ")[1]
+            try:
+                token = request.headers['Authorization'].split(" ")[1]
+            except IndexError:
+                return jsonify({'mensaje': 'Token mal formado!'}), 401
         if not token:
             return jsonify({'mensaje': 'Token está ausente!'}), 401
         try:
             data = pyjwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = Usuario.query.filter_by(user_id=data['user_id']).first()
+            if not current_user:
+                return jsonify({'mensaje': 'Usuario no encontrado!'}), 401
         except pyjwt.ExpiredSignatureError:
             return jsonify({'mensaje': 'Token expirado!'}), 401
         except pyjwt.InvalidTokenError:
@@ -110,11 +119,75 @@ def token_requerido(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-# Rutas CRUD para Aulas
+# Ruta para la raíz '/'
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({'mensaje': 'Bienvenido a la API de Asistencia QR!'}), 200
 
+# Ruta de registro
+@app.route('/registro', methods=['POST'])
+def registro():
+    try:
+        data = request.get_json()
+        nombre = data.get('nombre')
+        apellido = data.get('apellido')
+        email = data.get('email')
+        password = data.get('password')
+        rol = data.get('rol')
+
+        if not all([nombre, apellido, email, password, rol]):
+            return jsonify({'mensaje': 'Faltan datos!'}), 400
+
+        if Usuario.query.filter_by(email=email).first():
+            return jsonify({'mensaje': 'El email ya está registrado!'}), 400
+
+        nuevo_usuario = Usuario(
+            nombre=nombre,
+            apellido=apellido,
+            email=email,
+            rol=rol
+        )
+        nuevo_usuario.set_password(password)
+        db.session.add(nuevo_usuario)
+        db.session.commit()
+
+        return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+    except Exception as e:
+        app.logger.error(f"Error en registro: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+# Ruta de login
+@app.route('/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+
+        if not all([email, password]):
+            return jsonify({'mensaje': 'Faltan datos!'}), 400
+
+        usuario = Usuario.query.filter_by(email=email).first()
+        if not usuario or not usuario.check_password(password):
+            return jsonify({'mensaje': 'Credenciales inválidas!'}), 401
+
+        token = pyjwt.encode({
+            'user_id': usuario.user_id,
+            'exp': datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=24)
+        }, app.config['SECRET_KEY'], algorithm="HS256")
+
+        return jsonify({'token': token}), 200
+    except Exception as e:
+        app.logger.error(f"Error en login: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+# Ruta protegida
+@app.route('/protegido', methods=['GET'])
+@token_requerido
+def protegido(current_user):
+    return jsonify({'mensaje': f'Hola {current_user.nombre}, tienes acceso a esta ruta protegida!'}), 200
+
+# Rutas CRUD para Aulas
 @app.route('/aulas', methods=['POST'])
 @token_requerido
 def crear_aula(current_user):
@@ -213,3 +286,6 @@ def eliminar_aula(aula_id, current_user):
     except Exception as e:
         app.logger.error(f"Error al eliminar aula: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
