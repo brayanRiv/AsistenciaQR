@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta, time
 from functools import wraps
 from io import BytesIO
 import csv
+import hashlib
 
 app = Flask(__name__)
 
@@ -21,7 +22,7 @@ if database_url and database_url.startswith("postgres://"):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'tu_secreto')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fe4d61b2ad570a03abc4910e9d10362f1e3a24ce334d8b22')
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -76,9 +77,8 @@ class Asistencia(db.Model):
 class SesionQR(db.Model):
     __tablename__ = 'sesionesqr'
     sesion_id = db.Column(db.Integer, primary_key=True)
-    codigo_qr = db.Column(db.String(255), unique=True, nullable=False)
     aula_id = db.Column(db.Integer, db.ForeignKey('aulas.aula_id'), nullable=False)
-    docente_id = db.Column(db.Integer, db.ForeignKey('usuario.user_id'), nullable=True)  # Cambiar a nullable=True
+    docente_id = db.Column(db.Integer, db.ForeignKey('usuario.user_id'), nullable=False)
     fecha_sesion = db.Column(db.Date, nullable=False)
     hora_inicio = db.Column(db.Time, nullable=False)
     hora_fin = db.Column(db.Time, nullable=False)
