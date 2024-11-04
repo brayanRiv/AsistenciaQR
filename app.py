@@ -438,72 +438,71 @@ def registrar_asistencia(current_user):
 
     try:
         data = request.get_json()
-        codigo_qr = data.get('codigo_qr')
-        if not codigo_qr:
+        sesion_id = data.get('sesion_id')
+        codigo_qr_provided = data.get('codigo_qr')
+        if not all([sesion_id, codigo_qr_provided]):
             return jsonify({'mensaje': 'Faltan datos!'}), 400
 
-        # Verificar que el código QR corresponde a una SesionQR activa
-        sesion_qr = SesionQR.query.filter_by(codigo_qr=codigo_qr).first()
+        # Obtener la sesión
+        sesion_qr = SesionQR.query.get(sesion_id)
         if not sesion_qr:
-            return jsonify({'mensaje': 'Código QR inválido!'}), 400
-
-        # Obtener la hora actual en la zona horaria de Lima, Perú
-        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
-        current_time = datetime.now(lima_timezone).time()
-        current_date = datetime.now(lima_timezone).date()
+            return jsonify({'mensaje': 'Sesión no encontrada!'}), 404
 
         # Verificar que la sesión está activa
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        current_datetime = datetime.now(lima_timezone)
+        current_time = current_datetime.time()
+        current_date = current_datetime.date()
+
+        if current_date != sesion_qr.fecha_sesion:
+            return jsonify({'mensaje': 'La sesión no está activa hoy!'}), 400
+
         if not (sesion_qr.hora_inicio <= current_time <= sesion_qr.hora_fin):
-            return jsonify({'mensaje': 'La sesión no está activa!'}), 400
+            return jsonify({'mensaje': 'La sesión no está activa en este momento!'}), 400
 
-        # Calcular estado basado en la tolerancia
-        hora_inicio_tolerancia = (datetime.combine(datetime.today(), sesion_qr.hora_inicio) + timedelta(minutes=sesion_qr.tolerancia_minutos)).time()
-        if current_time <= hora_inicio_tolerancia:
-            estado = 'asistió'
-        else:
-            estado = 'tardanza'
+        # Generar el código QR actual
+        codigo_qr_actual = generar_codigo_qr_dinamico(sesion_id)
 
-        # Verificar si el estudiante ya registró asistencia para esta sesión
-        asistencia = Asistencia.query.filter_by(
+        # Verificar si el código proporcionado coincide
+        if codigo_qr_provided != codigo_qr_actual:
+            return jsonify({'mensaje': 'Código QR inválido o expirado!'}), 400
+
+        # Verificar si el estudiante ya registró asistencia
+        asistencia_existente = Asistencia.query.filter_by(
             user_id=current_user.user_id,
             aula_id=sesion_qr.aula_id,
             fecha_asistencia=current_date
         ).first()
-        if asistencia:
+
+        if asistencia_existente:
             return jsonify({'mensaje': 'Ya has registrado tu asistencia para esta sesión!'}), 400
 
-        # Registrar asistencia
+        # Registrar la asistencia
+        estado = 'asistió'
+        hora_llegada = current_time
+
+        # Determinar si el estudiante llegó tarde
+        hora_entrada_permitida = (datetime.combine(current_date, sesion_qr.hora_inicio) +
+                                  timedelta(minutes=sesion_qr.tolerancia_minutos)).time()
+
+        if hora_llegada > hora_entrada_permitida:
+            estado = 'tardanza'
+
         nueva_asistencia = Asistencia(
             user_id=current_user.user_id,
             aula_id=sesion_qr.aula_id,
             fecha_asistencia=current_date,
-            hora_entrada=current_time,
+            hora_entrada=hora_llegada,
             estado=estado
         )
         db.session.add(nueva_asistencia)
-
-        # Actualizar leaderboard
-        leaderboard_entry = Leaderboard.query.filter_by(user_id=current_user.user_id).first()
-        if not leaderboard_entry:
-            leaderboard_entry = Leaderboard(
-                user_id=current_user.user_id,
-                puntos=1,
-                fecha_actualizacion=datetime.now(lima_timezone)
-            )
-            db.session.add(leaderboard_entry)
-        else:
-            leaderboard_entry.puntos += 1
-            leaderboard_entry.fecha_actualizacion = datetime.now(lima_timezone)
-
         db.session.commit()
+
         return jsonify({'mensaje': 'Asistencia registrada exitosamente!', 'estado': estado}), 201
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        app.logger.error(f"Error al registrar la asistecnia: {str(e)}")
-        return jsonify({'mensaje': f'Error de base de datos: {str(e)}'}), 500
+
     except Exception as e:
-        app.logger.error(f"Error al registrar la asistecnia: {str(e)}")
-        return jsonify({'mensaje': f'Error interno del servidor: {str(e)}'}), 500
+        app.logger.error(f"Error al registrar asistencia: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
 # Ruta para obtener asistencias con filtros avanzados
 @app.route('/asistencias', methods=['GET'])
