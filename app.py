@@ -354,7 +354,7 @@ def crear_sesion_qr(current_user):
 
         # Convertir fechas y horas
         try:
-            fecha_sesion_dt = datetime.strptime(fecha_sesion, '%d/%m/%Y').date()
+            fecha_sesion_dt = datetime.strptime(fecha_sesion, '%Y-%m-%d').date()
             hora_inicio_tm = datetime.strptime(hora_inicio, '%H:%M:%S').time()
             hora_fin_tm = datetime.strptime(hora_fin, '%H:%M:%S').time()
         except ValueError as e:
@@ -375,7 +375,6 @@ def crear_sesion_qr(current_user):
     except Exception as e:
         app.logger.error(f"Error al crear sesión QR: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
-
 
 def generate_unique_qr_code():
     import uuid
