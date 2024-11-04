@@ -10,6 +10,7 @@ import jwt as pyjwt  # Importar con alias para evitar conflictos
 from datetime import datetime, timezone, timedelta, time
 from functools import wraps
 from io import BytesIO
+from sqlalchemy.exc import SQLAlchemyError
 import csv
 import hashlib
 
@@ -360,6 +361,10 @@ def crear_sesion_qr(current_user):
         except ValueError as e:
             return jsonify({'mensaje': f'Formato de fecha u hora inválido: {str(e)}'}), 400
 
+        # Verificar que hora_inicio es anterior a hora_fin
+        if hora_inicio_tm >= hora_fin_tm:
+            return jsonify({'mensaje': 'La hora de inicio debe ser anterior a la hora de fin!'}), 400
+
         nueva_sesion_qr = SesionQR(
             aula_id=aula_id,
             docente_id=current_user.user_id,
@@ -372,10 +377,13 @@ def crear_sesion_qr(current_user):
         db.session.commit()
 
         return jsonify({'mensaje': 'Sesión QR creada exitosamente!', 'sesion_id': nueva_sesion_qr.sesion_id}), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        app.logger.error(f"Error de base de datos al crear sesión QR: {str(e)}")
+        return jsonify({'mensaje': f'Error de base de datos: {str(e)}'}), 500
     except Exception as e:
         app.logger.error(f"Error al crear sesión QR: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
-
+        return jsonify({'mensaje': f'Error interno del servidor: {str(e)}'}), 500
 
 def generate_unique_qr_code():
     import uuid
