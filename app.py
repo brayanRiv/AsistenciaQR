@@ -497,9 +497,13 @@ def registrar_asistencia(current_user):
 
         db.session.commit()
         return jsonify({'mensaje': 'Asistencia registrada exitosamente!', 'estado': estado}), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        app.logger.error(f"Error al registrar la asistecnia: {str(e)}")
+        return jsonify({'mensaje': f'Error de base de datos: {str(e)}'}), 500
     except Exception as e:
-        app.logger.error(f"Error al registrar asistencia: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+        app.logger.error(f"Error al registrar la asistecnia: {str(e)}")
+        return jsonify({'mensaje': f'Error interno del servidor: {str(e)}'}), 500
 
 # Ruta para obtener asistencias con filtros avanzados
 @app.route('/asistencias', methods=['GET'])

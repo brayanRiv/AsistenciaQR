@@ -28,7 +28,6 @@ def upgrade():
         batch_op.add_column(sa.Column('docente_id', sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column('tolerancia_minutos', sa.Integer(), nullable=True))
         batch_op.create_foreign_key(None, 'usuario', ['docente_id'], ['user_id'])
-        batch_op.drop_column('codigo_qr')
 
     # ### end Alembic commands ###
 
@@ -39,7 +38,7 @@ def downgrade():
         batch_op.drop_constraint(None, type_='foreignkey')
         batch_op.drop_column('tolerancia_minutos')
         batch_op.drop_column('docente_id')
-        batch_op.add_column(sa.Column('codigo_qr', sa.VARCHAR(length=255), nullable=False))
+
 
     with op.batch_alter_table('asistencias', schema=None) as batch_op:
         batch_op.alter_column('hora_entrada',
