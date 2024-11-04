@@ -339,20 +339,33 @@ def crear_sesion_qr(current_user):
         if not all([aula_id, fecha_sesion, hora_inicio, hora_fin]):
             return jsonify({'mensaje': 'Faltan datos!'}), 400
 
-        # Verificar que el aula existe y pertenece al docente
+        # Verificar que el aula existe
         aula = Aula.query.get(aula_id)
         if not aula:
             return jsonify({'mensaje': 'Aula no encontrada!'}), 404
 
+        # Verificar que el aula tiene un docente asignado
+        if not aula.docente_id:
+            return jsonify({'mensaje': 'El aula no tiene un docente asignado!'}), 400
+
+        # Verificar que el docente actual es el asignado al aula
         if aula.docente_id != current_user.user_id:
             return jsonify({'mensaje': 'No tienes permiso para crear una sesión en esta aula!'}), 403
+
+        # Convertir fechas y horas
+        try:
+            fecha_sesion_dt = datetime.strptime(fecha_sesion, '%d/%m/%Y').date()
+            hora_inicio_tm = datetime.strptime(hora_inicio, '%H:%M:%S').time()
+            hora_fin_tm = datetime.strptime(hora_fin, '%H:%M:%S').time()
+        except ValueError as e:
+            return jsonify({'mensaje': f'Formato de fecha u hora inválido: {str(e)}'}), 400
 
         nueva_sesion_qr = SesionQR(
             aula_id=aula_id,
             docente_id=current_user.user_id,
-            fecha_sesion=datetime.strptime(fecha_sesion, '%d/%m/%Y').date(),
-            hora_inicio=datetime.strptime(hora_inicio, '%H:%M:%S').time(),
-            hora_fin=datetime.strptime(hora_fin, '%H:%M:%S').time(),
+            fecha_sesion=fecha_sesion_dt,
+            hora_inicio=hora_inicio_tm,
+            hora_fin=hora_fin_tm,
             tolerancia_minutos=tolerancia_minutos
         )
         db.session.add(nueva_sesion_qr)
@@ -654,11 +667,13 @@ def exportar_asistencias(current_user):
         output.seek(0)
 
         filename = f"asistencias_sesion_{sesion_id}.xlsx"
+
+        # Enviar el archivo con los headers correctos
         return send_file(
             output,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            download_name=filename,
-            as_attachment=True
+            as_attachment=True,
+            download_name=filename
         )
     except Exception as e:
         app.logger.error(f"Error al exportar asistencias: {str(e)}")
