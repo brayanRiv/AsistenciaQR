@@ -85,6 +85,7 @@ class SesionQR(db.Model):
     hora_fin = db.Column(db.Time, nullable=False)
     tolerancia_minutos = db.Column(db.Integer, default=0)
 
+
 # Modelo de Reportes
 class Reporte(db.Model):
     __tablename__ = 'reportes'
