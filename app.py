@@ -347,11 +347,7 @@ def crear_sesion_qr(current_user):
         if aula.docente_id != current_user.user_id:
             return jsonify({'mensaje': 'No tienes permiso para crear una sesión en esta aula!'}), 403
 
-        # Generar un código QR único
-        codigo_qr = generate_unique_qr_code()
-
         nueva_sesion_qr = SesionQR(
-            codigo_qr=codigo_qr,
             aula_id=aula_id,
             docente_id=current_user.user_id,
             fecha_sesion=datetime.strptime(fecha_sesion, '%d/%m/%Y').date(),
@@ -362,14 +358,54 @@ def crear_sesion_qr(current_user):
         db.session.add(nueva_sesion_qr)
         db.session.commit()
 
-        return jsonify({'mensaje': 'Sesión QR creada exitosamente!', 'codigo_qr': codigo_qr}), 201
+        return jsonify({'mensaje': 'Sesión QR creada exitosamente!', 'sesion_id': nueva_sesion_qr.sesion_id}), 201
     except Exception as e:
         app.logger.error(f"Error al crear sesión QR: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
+
 def generate_unique_qr_code():
     import uuid
     return str(uuid.uuid4())
+
+def generar_codigo_qr_dinamico(sesion_id):
+    # Usamos la hora actual (minuto actual) para generar un código que cambia cada minuto
+    lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+    current_time = datetime.now(lima_timezone)
+    current_minute = current_time.strftime('%Y%m%d%H%M')  # AñoMesDíaHoraMinuto
+
+    # Concatenamos sesion_id, current_minute y SECRET_KEY para generar el hash
+    data = f"{sesion_id}-{current_minute}-{app.config['SECRET_KEY']}"
+    codigo_qr = hashlib.sha256(data.encode()).hexdigest()
+    return codigo_qr
+
+
+@app.route('/sesionqr/<int:sesion_id>/codigo', methods=['GET'])
+@token_requerido
+@role_required(['docente', 'estudiante'])
+def obtener_codigo_qr(current_user, sesion_id):
+    try:
+        # Obtener la sesión
+        sesion = SesionQR.query.get(sesion_id)
+        if not sesion:
+            return jsonify({'mensaje': 'Sesión no encontrada!'}), 404
+
+        # Verificar que la sesión está activa
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        current_time = datetime.now(lima_timezone).time()
+
+        if not (sesion.hora_inicio <= current_time <= sesion.hora_fin):
+            return jsonify({'mensaje': 'La sesión no está activa!'}), 400
+
+        # Generar el código QR dinámico
+        codigo_qr = generar_codigo_qr_dinamico(sesion_id)
+
+        return jsonify({'codigo_qr': codigo_qr}), 200
+    except Exception as e:
+        app.logger.error(f"Error al obtener código QR: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+
 
 # Ruta para registrar asistencia
 @app.route('/asistencias', methods=['POST'])
@@ -571,16 +607,20 @@ def obtener_alertas(current_user):
 # Ruta para exportar asistencias
 @app.route('/asistencias/exportar', methods=['GET'])
 @token_requerido
-@role_required(['docente'])
+@role_required(['docente', 'admin'])
 def exportar_asistencias(current_user):
     try:
         sesion_id = request.args.get('sesion_id', type=int)
         if not sesion_id:
             return jsonify({'mensaje': 'Faltan datos!'}), 400
 
-        # Verificar que la sesión pertenece al docente
+        # Obtener la sesión
         sesion_qr = SesionQR.query.get(sesion_id)
-        if not sesion_qr or sesion_qr.docente_id != current_user.user_id:
+        if not sesion_qr:
+            return jsonify({'mensaje': 'Sesión no encontrada!'}), 404
+
+        # Verificar permisos
+        if current_user.rol == 'docente' and sesion_qr.docente_id != current_user.user_id:
             return jsonify({'mensaje': 'No tienes permiso para exportar estas asistencias!'}), 403
 
         # Obtener las asistencias de la sesión
@@ -589,32 +629,41 @@ def exportar_asistencias(current_user):
             fecha_asistencia=sesion_qr.fecha_sesion
         ).all()
 
-        # Crear el CSV
-        si = BytesIO()
-        cw = csv.writer(si)
+        # Crear el Excel
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Asistencias"
+
         # Escribir cabeceras
-        cw.writerow(['APELLIDOS', 'NOMBRES', 'ESTADO', 'HORA_ENTRADA'])
+        ws.append(['APELLIDOS', 'NOMBRES', 'ESTADO', 'FECHA', 'HORA_ENTRADA'])
+
         for asistencia in asistencias:
             usuario = asistencia.usuario
-            cw.writerow([
+            ws.append([
                 usuario.apellido,
                 usuario.nombre,
                 asistencia.estado,
+                asistencia.fecha_asistencia.strftime('%d/%m/%Y'),
                 asistencia.hora_entrada.strftime('%H:%M:%S') if asistencia.hora_entrada else ''
             ])
 
-        si.seek(0)
+        # Guardar en BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
 
-        filename = f"asistencias_sesion_{sesion_id}.csv"
+        filename = f"asistencias_sesion_{sesion_id}.xlsx"
         return send_file(
-            si,
-            mimetype='text/csv',
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             download_name=filename,
             as_attachment=True
         )
     except Exception as e:
         app.logger.error(f"Error al exportar asistencias: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)
