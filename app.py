@@ -376,6 +376,7 @@ def crear_sesion_qr(current_user):
         app.logger.error(f"Error al crear sesión QR: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
+
 def generate_unique_qr_code():
     import uuid
     return str(uuid.uuid4())
