@@ -419,19 +419,30 @@ def registrar_asistencia_docente(current_user):
     try:
         data = request.get_json()
         accion = data.get('accion')
+        codigo_qr_provided = data.get('codigo_qr')
 
         if accion not in ['entrada', 'salida']:
             return jsonify({'mensaje': 'Acción inválida!'}), 400
 
+        if not codigo_qr_provided:
+            return jsonify({'mensaje': 'Faltan datos! El campo "codigo_qr" es obligatorio.'}), 400
+
+        # Verificar que hay una sesión activa del director
         lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
         current_datetime = datetime.now(lima_timezone)
         current_date = current_datetime.date()
         current_time = current_datetime.time()
 
-        # Verificar si hay una sesión activa del director
         sesion_director = DirectorSesion.query.filter_by(fecha_sesion=current_date, activa=True).first()
         if not sesion_director:
             return jsonify({'mensaje': 'No hay una sesión activa para hoy!'}), 400
+
+        # Generar el código QR actual para el docente
+        codigo_qr_actual = generar_codigo_qr_dinamico_docente(current_user.user_id)
+
+        # Verificar si el código proporcionado coincide
+        if codigo_qr_provided != codigo_qr_actual:
+            return jsonify({'mensaje': 'Código QR inválido o expirado!'}), 400
 
         # Verificar si ya existe un registro de asistencia para hoy
         asistencia = AsistenciaDocente.query.filter_by(
@@ -461,6 +472,29 @@ def registrar_asistencia_docente(current_user):
     except Exception as e:
         app.logger.error(f"Error al registrar asistencia de docente: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+
+@app.route('/docente/asistencia/codigo', methods=['GET'])
+@token_requerido
+@role_required(['docente'])
+def obtener_codigo_qr_docente(current_user):
+    try:
+        # Verificar que hay una sesión activa del director
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        current_date = datetime.now(lima_timezone).date()
+
+        sesion_director = DirectorSesion.query.filter_by(fecha_sesion=current_date, activa=True).first()
+        if not sesion_director:
+            return jsonify({'mensaje': 'No hay una sesión activa para hoy!'}), 400
+
+        # Generar el código QR dinámico para el docente
+        codigo_qr = generar_codigo_qr_dinamico_docente(current_user.user_id)
+
+        return jsonify({'codigo_qr': codigo_qr}), 200
+    except Exception as e:
+        app.logger.error(f"Error al obtener código QR para docente: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
 
 # Ruta para crear Sesión QR
 @app.route('/sesionqr', methods=['POST'])
@@ -527,16 +561,30 @@ def generate_unique_qr_code():
     import uuid
     return str(uuid.uuid4())
 
-def generar_codigo_qr_dinamico(sesion_id):
-    # Usamos la hora actual (minuto actual) para generar un código que cambia cada minuto
+def generar_codigo_qr_dinamico(entity_id, entity_type):
+    """
+    Genera un código QR dinámico basado en el ID de la entidad y su tipo.
+
+    :param entity_id: ID de la entidad (sesion_id para estudiantes, user_id para docentes)
+    :param entity_type: Tipo de entidad ('sesion' o 'docente')
+    :return: Código QR generado como una cadena hexadecimal
+    """
     lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
     current_time = datetime.now(lima_timezone)
     current_minute = current_time.strftime('%Y%m%d%H%M')  # AñoMesDíaHoraMinuto
 
-    # Concatenamos sesion_id, current_minute y SECRET_KEY para generar el hash
-    data = f"{sesion_id}-{current_minute}-{app.config['SECRET_KEY']}"
+    # Concatenamos entity_type, entity_id, current_minute y SECRET_KEY para generar el hash
+    data = f"{entity_type}-{entity_id}-{current_minute}-{app.config['SECRET_KEY']}"
     codigo_qr = hashlib.sha256(data.encode()).hexdigest()
     return codigo_qr
+
+
+def generar_codigo_qr_dinamico_estudiante(sesion_id):
+    return generar_codigo_qr_dinamico(sesion_id, 'sesion')
+
+def generar_codigo_qr_dinamico_docente(user_id):
+    return generar_codigo_qr_dinamico(user_id, 'docente')
+
 
 @app.route('/sesionqr/<int:sesion_id>/codigo', methods=['GET'])
 @token_requerido
@@ -556,7 +604,7 @@ def obtener_codigo_qr(current_user, sesion_id):
             return jsonify({'mensaje': 'La sesión no está activa!'}), 400
 
         # Generar el código QR dinámico
-        codigo_qr = generar_codigo_qr_dinamico(sesion_id)
+        codigo_qr = generar_codigo_qr_dinamico(sesion_id, 'sesion')
 
         return jsonify({'codigo_qr': codigo_qr}), 200
     except Exception as e:
@@ -594,8 +642,8 @@ def registrar_asistencia(current_user):
         if not (sesion_qr.hora_inicio <= current_time <= sesion_qr.hora_fin):
             return jsonify({'mensaje': 'La sesión no está activa en este momento!'}), 400
 
-        # Generar el código QR actual
-        codigo_qr_actual = generar_codigo_qr_dinamico(sesion_id)
+        # Generar el código QR actual para la sesión
+        codigo_qr_actual = generar_codigo_qr_dinamico(sesion_id, 'sesion')
 
         # Verificar si el código proporcionado coincide
         if codigo_qr_provided != codigo_qr_actual:
