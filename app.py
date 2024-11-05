@@ -14,6 +14,8 @@ from functools import wraps
 from io import BytesIO
 from sqlalchemy.exc import SQLAlchemyError
 import hashlib
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 app = Flask(__name__)
 
@@ -29,6 +31,13 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fe4d61b2ad570a03abc4910
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
+# Configuración de Rate Limiting
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
+
+limiter.init_app(app)
 # Modelos
 
 class Usuario(db.Model):
@@ -178,10 +187,48 @@ def registro():
         apellido = data.get('apellido')
         email = data.get('email')
         password = data.get('password')
+        # Eliminar el rol proporcionado por el usuario
+        # rol = data.get('rol')
+
+        if not all([nombre, apellido, email, password]):
+            return jsonify({'mensaje': 'Faltan datos!'}), 400
+
+        if Usuario.query.filter_by(email=email).first():
+            return jsonify({'mensaje': 'El email ya está registrado!'}), 400
+
+        nuevo_usuario = Usuario(
+            nombre=nombre,
+            apellido=apellido,
+            email=email,
+            rol='estudiante'  # Establecer el rol siempre como 'estudiante'
+        )
+        nuevo_usuario.set_password(password)
+        db.session.add(nuevo_usuario)
+        db.session.commit()
+
+        return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+    except Exception as e:
+        app.logger.error(f"Error en registro: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+
+@app.route('/usuarios', methods=['POST'])
+@token_requerido
+@role_required(['admin'])
+def crear_usuario_por_admin(current_user):
+    try:
+        data = request.get_json()
+        nombre = data.get('nombre')
+        apellido = data.get('apellido')
+        email = data.get('email')
+        password = data.get('password')
         rol = data.get('rol')
 
         if not all([nombre, apellido, email, password, rol]):
             return jsonify({'mensaje': 'Faltan datos!'}), 400
+
+        if rol not in ['docente', 'director']:
+            return jsonify({'mensaje': 'Rol inválido! Solo puedes crear docentes o directores.'}), 400
 
         if Usuario.query.filter_by(email=email).first():
             return jsonify({'mensaje': 'El email ya está registrado!'}), 400
@@ -196,10 +243,11 @@ def registro():
         db.session.add(nuevo_usuario)
         db.session.commit()
 
-        return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+        return jsonify({'mensaje': f'Usuario {rol} creado exitosamente!'}), 201
     except Exception as e:
-        app.logger.error(f"Error en registro: {str(e)}")
+        app.logger.error(f"Error al crear usuario por admin: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
 
 # Ruta de login
 @app.route('/login', methods=['POST'])
