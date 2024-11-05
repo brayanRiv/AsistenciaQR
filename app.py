@@ -1,4 +1,6 @@
 from dotenv import load_dotenv
+from openpyxl.workbook import Workbook
+
 load_dotenv()
 
 from flask import Flask, request, jsonify, send_file
@@ -7,11 +9,10 @@ from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import jwt as pyjwt  # Importar con alias para evitar conflictos
-from datetime import datetime, timezone, timedelta, time
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 from io import BytesIO
 from sqlalchemy.exc import SQLAlchemyError
-import csv
 import hashlib
 
 app = Flask(__name__)
@@ -40,7 +41,6 @@ class Usuario(db.Model):
     rol = db.Column(db.String(50), nullable=False)
     fecha_registro = db.Column(db.DateTime, default=datetime.now(timezone.utc))
     ultimo_login = db.Column(db.DateTime)
-
     asistencias = db.relationship('Asistencia', backref='usuario', lazy=True)
     reportes = db.relationship('Reporte', backref='usuario', lazy=True)
     leaderboard = db.relationship('Leaderboard', backref='usuario', uselist=False)
@@ -51,6 +51,13 @@ class Usuario(db.Model):
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+class DirectorSesion(db.Model):
+    __tablename__ = 'director_sesiones'
+    sesion_id = db.Column(db.Integer, primary_key=True)
+    fecha_sesion = db.Column(db.Date, nullable=False)
+    activa = db.Column(db.Boolean, default=True)
+
 
 # Modelo de Aulas
 class Aula(db.Model):
@@ -85,7 +92,6 @@ class SesionQR(db.Model):
     hora_fin = db.Column(db.Time, nullable=False)
     tolerancia_minutos = db.Column(db.Integer, default=0)
 
-
 # Modelo de Reportes
 class Reporte(db.Model):
     __tablename__ = 'reportes'
@@ -109,6 +115,16 @@ class Alerta(db.Model):
     tipo = db.Column(db.String(100), nullable=False)
     descripcion = db.Column(db.Text, nullable=False)
     fecha_creacion = db.Column(db.DateTime, default=datetime.now(timezone.utc))
+
+class AsistenciaDocente(db.Model):
+    __tablename__ = 'asistencias_docentes'
+    asistencia_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('usuario.user_id'), nullable=False)
+    fecha_asistencia = db.Column(db.Date, nullable=False)
+    hora_entrada = db.Column(db.Time)
+    hora_salida = db.Column(db.Time)
+
+    usuario = db.relationship('Usuario', backref=db.backref('asistencias_docentes', lazy=True))
 
 # Decorador para rutas protegidas
 def token_requerido(f):
@@ -325,6 +341,78 @@ def eliminar_aula(current_user, aula_id):
         app.logger.error(f"Error al eliminar aula: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
+@app.route('/director/sesion', methods=['POST'])
+@token_requerido
+@role_required(['director'])
+def crear_sesion_director(current_user):
+    try:
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        today = datetime.now(lima_timezone).date()
+
+        # Verificar si ya existe una sesión para hoy
+        sesion_existente = DirectorSesion.query.filter_by(fecha_sesion=today, activa=True).first()
+        if sesion_existente:
+            return jsonify({'mensaje': 'Ya existe una sesión activa para hoy!'}), 400
+
+        nueva_sesion = DirectorSesion(fecha_sesion=today)
+        db.session.add(nueva_sesion)
+        db.session.commit()
+
+        return jsonify({'mensaje': 'Sesión de director creada exitosamente!', 'sesion_id': nueva_sesion.sesion_id}), 201
+    except Exception as e:
+        app.logger.error(f"Error al crear sesión de director: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+@app.route('/docente/asistencia', methods=['POST'])
+@token_requerido
+@role_required(['docente'])
+def registrar_asistencia_docente(current_user):
+    try:
+        data = request.get_json()
+        accion = data.get('accion')
+
+        if accion not in ['entrada', 'salida']:
+            return jsonify({'mensaje': 'Acción inválida!'}), 400
+
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        current_datetime = datetime.now(lima_timezone)
+        current_date = current_datetime.date()
+        current_time = current_datetime.time()
+
+        # Verificar si hay una sesión activa del director
+        sesion_director = DirectorSesion.query.filter_by(fecha_sesion=current_date, activa=True).first()
+        if not sesion_director:
+            return jsonify({'mensaje': 'No hay una sesión activa para hoy!'}), 400
+
+        # Verificar si ya existe un registro de asistencia para hoy
+        asistencia = AsistenciaDocente.query.filter_by(
+            user_id=current_user.user_id,
+            fecha_asistencia=current_date
+        ).first()
+
+        if not asistencia:
+            asistencia = AsistenciaDocente(
+                user_id=current_user.user_id,
+                fecha_asistencia=current_date
+            )
+            db.session.add(asistencia)
+
+        if accion == 'entrada':
+            if asistencia.hora_entrada:
+                return jsonify({'mensaje': 'Ya registraste tu hora de entrada!'}), 400
+            asistencia.hora_entrada = current_time
+        elif accion == 'salida':
+            if asistencia.hora_salida:
+                return jsonify({'mensaje': 'Ya registraste tu hora de salida!'}), 400
+            asistencia.hora_salida = current_time
+
+        db.session.commit()
+
+        return jsonify({'mensaje': f'Hora de {accion} registrada exitosamente!'}), 201
+    except Exception as e:
+        app.logger.error(f"Error al registrar asistencia de docente: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
 # Ruta para crear Sesión QR
 @app.route('/sesionqr', methods=['POST'])
 @token_requerido
@@ -401,7 +489,6 @@ def generar_codigo_qr_dinamico(sesion_id):
     codigo_qr = hashlib.sha256(data.encode()).hexdigest()
     return codigo_qr
 
-
 @app.route('/sesionqr/<int:sesion_id>/codigo', methods=['GET'])
 @token_requerido
 @role_required(['docente', 'estudiante'])
@@ -427,9 +514,7 @@ def obtener_codigo_qr(current_user, sesion_id):
         app.logger.error(f"Error al obtener código QR: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
-
-
-# Ruta para registrar asistencia
+# Ruta para registrar asistencia (estudiante)
 @app.route('/asistencias', methods=['POST'])
 @token_requerido
 def registrar_asistencia(current_user):
@@ -573,114 +658,117 @@ def obtener_leaderboard(current_user):
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
 # Ruta para generar alertas
-@app.route('/alertas/generar', methods=['POST'])
-@token_requerido
-@role_required(['admin'])
-def generar_alertas(current_user):
-    try:
-        generar_alertas_asistencias()
-        return jsonify({'mensaje': 'Alertas generadas exitosamente!'}), 200
-    except Exception as e:
-        app.logger.error(f"Error al generar alertas: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
-
-def generar_alertas_asistencias():
-    estudiantes = Usuario.query.filter_by(rol='estudiante').all()
-    lima_timezone = timezone(timedelta(hours=-5))
-    fecha_hoy = datetime.now(lima_timezone).date()
-    fecha_inicio = fecha_hoy - timedelta(days=7)
-
-    for estudiante in estudiantes:
-        asistencias_tardanzas = Asistencia.query.filter(
-            Asistencia.user_id == estudiante.user_id,
-            Asistencia.fecha_asistencia >= fecha_inicio,
-            Asistencia.estado == 'tardanza'
-        ).count()
-
-        if asistencias_tardanzas >= 3:
-            descripcion = f"El estudiante {estudiante.nombre} {estudiante.apellido} ha llegado tarde {asistencias_tardanzas} veces en la última semana."
-            alerta_existente = Alerta.query.filter_by(descripcion=descripcion).first()
-            if not alerta_existente:
-                nueva_alerta = Alerta(
-                    tipo='Tardanzas Repetitivas',
-                    descripcion=descripcion
-                )
-                db.session.add(nueva_alerta)
-    db.session.commit()
-
-# Ruta para obtener alertas
-@app.route('/alertas', methods=['GET'])
-@token_requerido
-@role_required(['admin'])
-def obtener_alertas(current_user):
-    try:
-        alertas = Alerta.query.order_by(Alerta.fecha_creacion.desc()).all()
-        resultado = []
-        for alerta in alertas:
-            alerta_data = {
-                'alerta_id': alerta.alerta_id,
-                'tipo': alerta.tipo,
-                'descripcion': alerta.descripcion,
-                'fecha_creacion': alerta.fecha_creacion.strftime('%d/%m/%Y %H:%M:%S')
-            }
-            resultado.append(alerta_data)
-        return jsonify({'alertas': resultado}), 200
-    except Exception as e:
-        app.logger.error(f"Error al obtener alertas: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
-
-# Ruta para exportar asistencias
 @app.route('/asistencias/exportar', methods=['GET'])
 @token_requerido
-@role_required(['docente', 'admin'])
+@role_required(['docente', 'director'])
 def exportar_asistencias(current_user):
     try:
-        sesion_id = request.args.get('sesion_id', type=int)
-        if not sesion_id:
+        periodo = request.args.get('periodo')
+        if not periodo:
             return jsonify({'mensaje': 'Faltan datos!'}), 400
 
-        # Obtener la sesión
-        sesion_qr = SesionQR.query.get(sesion_id)
-        if not sesion_qr:
-            return jsonify({'mensaje': 'Sesión no encontrada!'}), 404
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        today = datetime.now(lima_timezone).date()
 
-        # Verificar permisos
-        if current_user.rol == 'docente' and sesion_qr.docente_id != current_user.user_id:
+        # Determinar rango de fechas
+        if periodo == 'ultima_semana':
+            fecha_inicio = today - timedelta(days=7)
+            fecha_fin = today
+        elif periodo == 'ultimo_mes':
+            fecha_inicio = today - timedelta(days=30)
+            fecha_fin = today
+        elif periodo == 'todo':
+            fecha_inicio = None
+            fecha_fin = None
+        else:
+            return jsonify({'mensaje': 'Periodo inválido!'}), 400
+
+        # Crear el libro de Excel
+        wb = Workbook()
+
+        # Inicializar variables
+        query_estudiantes = None
+        query_docentes = None
+
+        # Obtener asistencias de estudiantes según el rol
+        if current_user.rol == 'docente':
+            # Obtener aulas del docente
+            aulas_ids = [aula.aula_id for aula in current_user.aulas]
+            query_estudiantes = Asistencia.query.filter(Asistencia.aula_id.in_(aulas_ids))
+        elif current_user.rol == 'director':
+            # El director tiene acceso a todas las asistencias
+            query_estudiantes = Asistencia.query
+            # También obtenemos las asistencias de docentes
+            query_docentes = AsistenciaDocente.query
+        else:
             return jsonify({'mensaje': 'No tienes permiso para exportar estas asistencias!'}), 403
 
-        # Obtener las asistencias de la sesión
-        asistencias = Asistencia.query.filter_by(
-            aula_id=sesion_qr.aula_id,
-            fecha_asistencia=sesion_qr.fecha_sesion
-        ).all()
+        # Filtrar por fechas si es necesario
+        if fecha_inicio and fecha_fin:
+            query_estudiantes = query_estudiantes.filter(Asistencia.fecha_asistencia.between(fecha_inicio, fecha_fin))
+            if current_user.rol == 'director':
+                query_docentes = query_docentes.filter(AsistenciaDocente.fecha_asistencia.between(fecha_inicio, fecha_fin))
 
-        # Crear el Excel
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Asistencias"
+        # Obtener asistencias de estudiantes
+        asistencias_estudiantes = query_estudiantes.order_by(Asistencia.fecha_asistencia).all()
 
-        # Escribir cabeceras
-        ws.append(['APELLIDOS', 'NOMBRES', 'ESTADO', 'FECHA', 'HORA_ENTRADA'])
+        # Hoja para asistencias de estudiantes
+        ws_estudiantes = wb.active
+        ws_estudiantes.title = "Asistencias Estudiantes"
 
-        for asistencia in asistencias:
+        # Escribir cabeceras para estudiantes
+        headers_estudiantes = ['APELLIDOS', 'NOMBRES', 'FECHA_ASISTENCIA', 'ESTADO', 'HORA_ENTRADA']
+        ws_estudiantes.append(headers_estudiantes)
+
+        for asistencia in asistencias_estudiantes:
             usuario = asistencia.usuario
-            ws.append([
+            ws_estudiantes.append([
                 usuario.apellido,
                 usuario.nombre,
-                asistencia.estado,
                 asistencia.fecha_asistencia.strftime('%d/%m/%Y'),
+                asistencia.estado,
                 asistencia.hora_entrada.strftime('%H:%M:%S') if asistencia.hora_entrada else ''
             ])
+
+        # Ajustar anchos de columna para estudiantes
+        for column_cells in ws_estudiantes.columns:
+            length = max(len(str(cell.value)) for cell in column_cells)
+            ws_estudiantes.column_dimensions[column_cells[0].column_letter].width = length + 2
+
+        # Si el usuario es director, agregamos asistencias de docentes
+        if current_user.rol == 'director':
+            # Obtener asistencias de docentes
+            asistencias_docentes = query_docentes.order_by(AsistenciaDocente.fecha_asistencia).all()
+
+            # Crear nueva hoja para docentes
+            ws_docentes = wb.create_sheet(title="Asistencias Docentes")
+
+            # Escribir cabeceras para docentes
+            headers_docentes = ['APELLIDOS', 'NOMBRES', 'FECHA_ASISTENCIA', 'HORA_ENTRADA', 'HORA_SALIDA']
+            ws_docentes.append(headers_docentes)
+
+            for asistencia in asistencias_docentes:
+                usuario = asistencia.usuario
+                ws_docentes.append([
+                    usuario.apellido,
+                    usuario.nombre,
+                    asistencia.fecha_asistencia.strftime('%d/%m/%Y'),
+                    asistencia.hora_entrada.strftime('%H:%M:%S') if asistencia.hora_entrada else '',
+                    asistencia.hora_salida.strftime('%H:%M:%S') if asistencia.hora_salida else ''
+                ])
+
+            # Ajustar anchos de columna para docentes
+            for column_cells in ws_docentes.columns:
+                length = max(len(str(cell.value)) for cell in column_cells)
+                ws_docentes.column_dimensions[column_cells[0].column_letter].width = length + 2
 
         # Guardar en BytesIO
         output = BytesIO()
         wb.save(output)
         output.seek(0)
 
-        filename = f"asistencias_sesion_{sesion_id}.xlsx"
+        filename = f"asistencias_{periodo}.xlsx"
 
-        # Enviar el archivo con los headers correctos
         return send_file(
             output,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
