@@ -1,6 +1,4 @@
 from dotenv import load_dotenv
-from openpyxl.workbook import Workbook
-
 load_dotenv()
 
 from flask import Flask, request, jsonify, send_file
@@ -16,6 +14,9 @@ from sqlalchemy.exc import SQLAlchemyError
 import hashlib
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment
 
 app = Flask(__name__)
 
@@ -708,115 +709,142 @@ def obtener_leaderboard(current_user):
 # Ruta para generar alertas
 @app.route('/asistencias/exportar', methods=['GET'])
 @token_requerido
-@role_required(['docente', 'director'])
+@role_required(['docente', 'admin', 'director'])
 def exportar_asistencias(current_user):
     try:
-        periodo = request.args.get('periodo')
-        if not periodo:
-            return jsonify({'mensaje': 'Faltan datos!'}), 400
+        # Obtener parámetros
+        opcion = request.args.get('opcion')  # 'semanal', 'mensual', 'todo'
+        aula_id = request.args.get('aula_id', type=int)
 
+        if not all([opcion, aula_id]):
+            return jsonify({'mensaje': 'Faltan datos! Debes proporcionar la opción y aula_id.'}), 400
+
+        if opcion not in ['semanal', 'mensual', 'todo']:
+            return jsonify({'mensaje': 'Opción inválida! Debe ser "semanal", "mensual" o "todo".'}), 400
+
+        # Obtener la fecha actual en la zona horaria de Lima
         lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
-        today = datetime.now(lima_timezone).date()
+        current_date = datetime.now(lima_timezone).date()
 
-        # Determinar rango de fechas
-        if periodo == 'ultima_semana':
-            fecha_inicio = today - timedelta(days=7)
-            fecha_fin = today
-        elif periodo == 'ultimo_mes':
-            fecha_inicio = today - timedelta(days=30)
-            fecha_fin = today
-        elif periodo == 'todo':
-            fecha_inicio = None
-            fecha_fin = None
+        # Inicializar fecha_inicio
+        fecha_inicio = None
+
+        # Calcular el rango de fechas según la opción
+        if opcion == 'semanal':
+            fecha_inicio = current_date - timedelta(days=7)
+        elif opcion == 'mensual':
+            fecha_inicio = current_date - timedelta(days=30)
+        elif opcion == 'todo':
+            # Fecha muy antigua para incluir todas las asistencias
+            fecha_inicio = datetime.strptime('2000-01-01', '%Y-%m-%d').date()
         else:
-            return jsonify({'mensaje': 'Periodo inválido!'}), 400
+            # Este else no debería ser alcanzado, pero lo agregamos para evitar posibles alertas
+            return jsonify({'mensaje': 'Opción inválida!'}), 400
 
-        # Crear el libro de Excel
-        wb = Workbook()
+        fecha_fin = current_date
 
-        # Inicializar variables
-        query_estudiantes = None
-        query_docentes = None
-
-        # Obtener asistencias de estudiantes según el rol
+        # Verificar permisos y filtrar asistencias según el rol
         if current_user.rol == 'docente':
-            # Obtener aulas del docente
-            aulas_ids = [aula.aula_id for aula in current_user.aulas]
-            query_estudiantes = Asistencia.query.filter(Asistencia.aula_id.in_(aulas_ids))
+            # El docente solo puede exportar asistencias de sus propias aulas
+            aula = Aula.query.get(aula_id)
+            if not aula:
+                return jsonify({'mensaje': 'Aula no encontrada!'}), 404
+            if aula.docente_id != current_user.user_id:
+                return jsonify({'mensaje': 'No tienes permiso para exportar asistencias de esta aula!'}), 403
+            # Filtrar asistencias del aula y rango de fechas
+            asistencias = Asistencia.query.filter(
+                Asistencia.aula_id == aula_id,
+                Asistencia.fecha_asistencia >= fecha_inicio,
+                Asistencia.fecha_asistencia <= fecha_fin
+            ).join(Usuario).order_by(Usuario.apellido, Usuario.nombre).all()
         elif current_user.rol == 'director':
-            # El director tiene acceso a todas las asistencias
-            query_estudiantes = Asistencia.query
-            # También obtenemos las asistencias de docentes
-            query_docentes = AsistenciaDocente.query
+            # El director puede exportar asistencias del aula en el rango de fechas
+            asistencias = Asistencia.query.filter(
+                Asistencia.aula_id == aula_id,
+                Asistencia.fecha_asistencia >= fecha_inicio,
+                Asistencia.fecha_asistencia <= fecha_fin
+            ).join(Usuario).order_by(Usuario.apellido, Usuario.nombre).all()
+        elif current_user.rol == 'admin':
+            # El administrador puede exportar todas las asistencias
+            asistencias = Asistencia.query.filter(
+                Asistencia.aula_id == aula_id,
+                Asistencia.fecha_asistencia >= fecha_inicio,
+                Asistencia.fecha_asistencia <= fecha_fin
+            ).join(Usuario).order_by(Usuario.apellido, Usuario.nombre).all()
         else:
-            return jsonify({'mensaje': 'No tienes permiso para exportar estas asistencias!'}), 403
+            return jsonify({'mensaje': 'No tienes permiso para exportar asistencias!'}), 403
 
-        # Filtrar por fechas si es necesario
-        if fecha_inicio and fecha_fin:
-            query_estudiantes = query_estudiantes.filter(Asistencia.fecha_asistencia.between(fecha_inicio, fecha_fin))
-            if current_user.rol == 'director':
-                query_docentes = query_docentes.filter(AsistenciaDocente.fecha_asistencia.between(fecha_inicio, fecha_fin))
+        if not asistencias:
+            return jsonify({'mensaje': 'No hay asistencias registradas en el período especificado.'}), 404
 
-        # Obtener asistencias de estudiantes
-        asistencias_estudiantes = query_estudiantes.order_by(Asistencia.fecha_asistencia).all()
+        # Crear una lista de fechas en el rango
+        delta = fecha_fin - fecha_inicio
+        lista_fechas = [fecha_inicio + timedelta(days=i) for i in range(delta.days + 1)]
 
-        # Hoja para asistencias de estudiantes
-        ws_estudiantes = wb.active
-        ws_estudiantes.title = "Asistencias Estudiantes"
+        # Crear un diccionario para mapear user_id a datos del usuario
+        usuarios = {}
+        for asistencia in asistencias:
+            user_id = asistencia.user_id
+            if user_id not in usuarios:
+                usuarios[user_id] = {
+                    'apellido': asistencia.usuario.apellido,
+                    'nombre': asistencia.usuario.nombre,
+                    'asistencias': {}
+                }
+            usuarios[user_id]['asistencias'][asistencia.fecha_asistencia] = asistencia
 
-        # Escribir cabeceras para estudiantes
-        headers_estudiantes = ['APELLIDOS', 'NOMBRES', 'FECHA_ASISTENCIA', 'ESTADO', 'HORA_ENTRADA']
-        ws_estudiantes.append(headers_estudiantes)
+        # Obtener todos los usuarios inscritos en el aula (opcional)
+        lista_usuarios = list(usuarios.values())
 
-        for asistencia in asistencias_estudiantes:
-            usuario = asistencia.usuario
-            ws_estudiantes.append([
-                usuario.apellido,
-                usuario.nombre,
-                asistencia.fecha_asistencia.strftime('%d/%m/%Y'),
-                asistencia.estado,
-                asistencia.hora_entrada.strftime('%H:%M:%S') if asistencia.hora_entrada else ''
-            ])
+        # Crear el Excel
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Asistencias"
 
-        # Ajustar anchos de columna para estudiantes
-        for column_cells in ws_estudiantes.columns:
+        # Escribir cabeceras
+        headers = ['APELLIDOS', 'NOMBRES']
+        # Agregar columnas para cada fecha
+        for fecha in lista_fechas:
+            # Obtener el nombre del día en español
+            nombre_dia_es = obtener_nombre_dia_espanol(fecha)
+            encabezado = f"{nombre_dia_es} {fecha.strftime('%d/%m/%Y')}"
+            headers.append(encabezado)
+        ws.append(headers)
+
+        # Escribir datos de asistencias
+        for usuario in lista_usuarios:
+            row = [usuario['apellido'], usuario['nombre']]
+            for fecha in lista_fechas:
+                asistencia = usuario['asistencias'].get(fecha)
+                if asistencia:
+                    estado = asistencia.estado
+                    # Concatenar estado y horas si es necesario
+                    hora_entrada = asistencia.hora_entrada.strftime('%H:%M:%S') if asistencia.hora_entrada else ''
+                    hora_salida = asistencia.hora_salida.strftime('%H:%M:%S') if asistencia.hora_salida else ''
+                    contenido_celda = f"{estado}"
+                    if current_user.rol == 'director':
+                        # Si el usuario es director, incluir horas de entrada y salida
+                        contenido_celda += f"\nEntrada: {hora_entrada}\nSalida: {hora_salida}"
+                else:
+                    contenido_celda = ''
+                row.append(contenido_celda)
+            ws.append(row)
+
+        # Ajustar el ancho de las columnas y alineación
+        for i, column_cells in enumerate(ws.columns, 1):
             length = max(len(str(cell.value)) for cell in column_cells)
-            ws_estudiantes.column_dimensions[column_cells[0].column_letter].width = length + 2
-
-        # Si el usuario es director, agregamos asistencias de docentes
-        if current_user.rol == 'director':
-            # Obtener asistencias de docentes
-            asistencias_docentes = query_docentes.order_by(AsistenciaDocente.fecha_asistencia).all()
-
-            # Crear nueva hoja para docentes
-            ws_docentes = wb.create_sheet(title="Asistencias Docentes")
-
-            # Escribir cabeceras para docentes
-            headers_docentes = ['APELLIDOS', 'NOMBRES', 'FECHA_ASISTENCIA', 'HORA_ENTRADA', 'HORA_SALIDA']
-            ws_docentes.append(headers_docentes)
-
-            for asistencia in asistencias_docentes:
-                usuario = asistencia.usuario
-                ws_docentes.append([
-                    usuario.apellido,
-                    usuario.nombre,
-                    asistencia.fecha_asistencia.strftime('%d/%m/%Y'),
-                    asistencia.hora_entrada.strftime('%H:%M:%S') if asistencia.hora_entrada else '',
-                    asistencia.hora_salida.strftime('%H:%M:%S') if asistencia.hora_salida else ''
-                ])
-
-            # Ajustar anchos de columna para docentes
-            for column_cells in ws_docentes.columns:
-                length = max(len(str(cell.value)) for cell in column_cells)
-                ws_docentes.column_dimensions[column_cells[0].column_letter].width = length + 2
+            ws.column_dimensions[get_column_letter(i)].width = length + 5  # Añadir un poco más de ancho
+            for cell in column_cells:
+                cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='center')
 
         # Guardar en BytesIO
         output = BytesIO()
         wb.save(output)
         output.seek(0)
 
-        filename = f"asistencias_{periodo}.xlsx"
+        filename = f"asistencias_{opcion}_{aula_id}.xlsx"
 
+        # Enviar el archivo con los headers correctos
         return send_file(
             output,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -825,8 +853,20 @@ def exportar_asistencias(current_user):
         )
     except Exception as e:
         app.logger.error(f"Error al exportar asistencias: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+        return jsonify({'mensaje': f'Error interno del servidor: {str(e)}'}), 500
 
+def obtener_nombre_dia_espanol(fecha):
+    dias_semana = {
+        0: 'LUNES',
+        1: 'MARTES',
+        2: 'MIÉRCOLES',
+        3: 'JUEVES',
+        4: 'VIERNES',
+        5: 'SÁBADO',
+        6: 'DOMINGO'
+    }
+    dia_semana = fecha.weekday()  # Devuelve un número de 0 (lunes) a 6 (domingo)
+    return dias_semana.get(dia_semana, '')
 
 if __name__ == '__main__':
     app.run(debug=True)
