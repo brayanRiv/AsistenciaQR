@@ -49,6 +49,7 @@ class Usuario(db.Model):
     email = db.Column(db.String(150), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     rol = db.Column(db.String(50), nullable=False)
+    codigo_qr = db.Column(db.String(255), nullable=True)
     fecha_registro = db.Column(db.DateTime, default=datetime.now(timezone.utc))
     ultimo_login = db.Column(db.DateTime)
     asistencias = db.relationship('Asistencia', backref='usuario', lazy=True)
@@ -180,6 +181,7 @@ def index():
     return jsonify({'mensaje': 'Bienvenido a la API de Asistencia QR!'}), 200
 
 # Ruta de registro
+# Ruta de registro
 @app.route('/registro', methods=['POST'])
 def registro():
     try:
@@ -188,8 +190,6 @@ def registro():
         apellido = data.get('apellido')
         email = data.get('email')
         password = data.get('password')
-        # Eliminar el rol proporcionado por el usuario
-        # rol = data.get('rol')
 
         if not all([nombre, apellido, email, password]):
             return jsonify({'mensaje': 'Faltan datos!'}), 400
@@ -197,19 +197,87 @@ def registro():
         if Usuario.query.filter_by(email=email).first():
             return jsonify({'mensaje': 'El email ya está registrado!'}), 400
 
+        # Generar código QR único
+        codigo_qr = generar_codigo_qr_unico_estudiante(email)
+
         nuevo_usuario = Usuario(
             nombre=nombre,
             apellido=apellido,
             email=email,
-            rol='estudiante'  # Establecer el rol siempre como 'estudiante'
+            rol='estudiante',
+            codigo_qr=codigo_qr  # Guardar el código QR
         )
         nuevo_usuario.set_password(password)
         db.session.add(nuevo_usuario)
         db.session.commit()
 
-        return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+        return jsonify({'mensaje': 'Usuario registrado exitosamente!', 'codigo_qr': codigo_qr}), 201
     except Exception as e:
         app.logger.error(f"Error en registro: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+def generar_codigo_qr_unico_estudiante(email):
+    """
+    Genera un código QR único para un estudiante basado en su email y una clave secreta.
+    """
+    data = f"{email}-{app.config['SECRET_KEY']}"
+    codigo_qr = hashlib.sha256(data.encode()).hexdigest()
+    return codigo_qr
+
+def verificar_sesion_activa(sesion_qr, current_datetime):
+    current_time = current_datetime.time()
+    current_date = current_datetime.date()
+
+    if current_date != sesion_qr.fecha_sesion:
+        return {'mensaje': 'La sesión no está activa hoy!'}, 400
+
+    if not (sesion_qr.hora_inicio <= current_time <= sesion_qr.hora_fin):
+        return {'mensaje': 'La sesión no está activa en este momento!'}, 400
+
+    return None, None  # No hay error
+
+
+
+@app.route('/docente/asistencia/estudiante', methods=['POST'])
+@token_requerido
+@role_required(['docente'])
+def registrar_asistencia_estudiante_por_docente(current_user):
+    try:
+        data = request.get_json()
+        codigo_qr_estudiante = data.get('codigo_qr')
+        sesion_id = data.get('sesion_id')
+
+        if not all([codigo_qr_estudiante, sesion_id]):
+            return jsonify({'mensaje': 'Faltan datos!'}), 400
+
+        # Verificar que el código QR pertenece a un estudiante
+        estudiante = Usuario.query.filter_by(codigo_qr=codigo_qr_estudiante, rol='estudiante').first()
+        if not estudiante:
+            return jsonify({'mensaje': 'Código QR inválido!'}), 400
+
+        # Obtener la sesión
+        sesion_qr = SesionQR.query.get(sesion_id)
+        if not sesion_qr:
+            return jsonify({'mensaje': 'Sesión no encontrada!'}), 404
+
+        # Verificar que el docente es el asignado al aula
+        if sesion_qr.docente_id != current_user.user_id:
+            return jsonify({'mensaje': 'No tienes permiso para registrar asistencia en esta sesión!'}), 403
+
+        # Verificar que la sesión está activa
+        lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
+        current_datetime = datetime.now(lima_timezone)
+
+        error_response, error_status = verificar_sesion_activa(sesion_qr, current_datetime)
+        if error_response:
+            return jsonify(error_response), error_status
+
+        # Registrar la asistencia
+        response, status_code = registrar_asistencia_estudiante(estudiante.user_id, sesion_qr, current_datetime)
+        return jsonify(response), status_code
+
+    except Exception as e:
+        app.logger.error(f"Error al registrar asistencia del estudiante por docente: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
 
@@ -633,14 +701,10 @@ def registrar_asistencia(current_user):
         # Verificar que la sesión está activa
         lima_timezone = timezone(timedelta(hours=-5))  # UTC-5
         current_datetime = datetime.now(lima_timezone)
-        current_time = current_datetime.time()
-        current_date = current_datetime.date()
 
-        if current_date != sesion_qr.fecha_sesion:
-            return jsonify({'mensaje': 'La sesión no está activa hoy!'}), 400
-
-        if not (sesion_qr.hora_inicio <= current_time <= sesion_qr.hora_fin):
-            return jsonify({'mensaje': 'La sesión no está activa en este momento!'}), 400
+        error_response, error_status = verificar_sesion_activa(sesion_qr, current_datetime)
+        if error_response:
+            return jsonify(error_response), error_status
 
         # Generar el código QR actual para la sesión
         codigo_qr_actual = generar_codigo_qr_dinamico(sesion_id, 'sesion')
@@ -649,42 +713,48 @@ def registrar_asistencia(current_user):
         if codigo_qr_provided != codigo_qr_actual:
             return jsonify({'mensaje': 'Código QR inválido o expirado!'}), 400
 
-        # Verificar si el estudiante ya registró asistencia
-        asistencia_existente = Asistencia.query.filter_by(
-            user_id=current_user.user_id,
-            aula_id=sesion_qr.aula_id,
-            fecha_asistencia=current_date
-        ).first()
-
-        if asistencia_existente:
-            return jsonify({'mensaje': 'Ya has registrado tu asistencia para esta sesión!'}), 400
-
         # Registrar la asistencia
-        estado = 'asistió'
-        hora_llegada = current_time
-
-        # Determinar si el estudiante llegó tarde
-        hora_entrada_permitida = (datetime.combine(current_date, sesion_qr.hora_inicio) +
-                                  timedelta(minutes=sesion_qr.tolerancia_minutos)).time()
-
-        if hora_llegada > hora_entrada_permitida:
-            estado = 'tardanza'
-
-        nueva_asistencia = Asistencia(
-            user_id=current_user.user_id,
-            aula_id=sesion_qr.aula_id,
-            fecha_asistencia=current_date,
-            hora_entrada=hora_llegada,
-            estado=estado
-        )
-        db.session.add(nueva_asistencia)
-        db.session.commit()
-
-        return jsonify({'mensaje': 'Asistencia registrada exitosamente!', 'estado': estado}), 201
+        response, status_code = registrar_asistencia_estudiante(current_user.user_id, sesion_qr, current_datetime)
+        return jsonify(response), status_code
 
     except Exception as e:
         app.logger.error(f"Error al registrar asistencia: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+def registrar_asistencia_estudiante(estudiante_id, sesion_qr, current_datetime):
+    # Verificar si el estudiante ya registró asistencia
+    asistencia_existente = Asistencia.query.filter_by(
+        user_id=estudiante_id,
+        aula_id=sesion_qr.aula_id,
+        fecha_asistencia=current_datetime.date()
+    ).first()
+
+    if asistencia_existente:
+        return {'mensaje': 'El estudiante ya tiene registrada su asistencia para esta sesión!'}, 400
+
+    # Registrar la asistencia
+    estado = 'asistió'
+    hora_llegada = current_datetime.time()
+
+    # Determinar si el estudiante llegó tarde
+    hora_entrada_permitida = (datetime.combine(current_datetime.date(), sesion_qr.hora_inicio) +
+                              timedelta(minutes=sesion_qr.tolerancia_minutos)).time()
+
+    if hora_llegada > hora_entrada_permitida:
+        estado = 'tardanza'
+
+    nueva_asistencia = Asistencia(
+        user_id=estudiante_id,
+        aula_id=sesion_qr.aula_id,
+        fecha_asistencia=current_datetime.date(),
+        hora_entrada=hora_llegada,
+        estado=estado
+    )
+    db.session.add(nueva_asistencia)
+    db.session.commit()
+
+    return {'mensaje': 'Asistencia registrada exitosamente!', 'estado': estado}, 201
+
 
 # Ruta para obtener asistencias con filtros avanzados
 @app.route('/asistencias', methods=['GET'])
