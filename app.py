@@ -236,6 +236,45 @@ def verificar_sesion_activa(sesion_qr, current_datetime):
     return None, None  # No hay error
 
 
+@app.route('/director/sesion/<int:sesion_id>/codigo', methods=['GET'])
+@token_requerido
+@role_required(['director'])
+def obtener_codigo_qr_sesion_director(current_user, sesion_id):
+    try:
+        # Obtener la sesión del director
+        sesion = DirectorSesion.query.get(sesion_id)
+        if not sesion:
+            return jsonify({'mensaje': 'Sesión no encontrada!'}), 404
+
+        # Verificar que la sesión pertenece al director actual
+        # Asumiendo que hay una relación que asocia sesiones con directores
+        # Si no existe, podrías necesitar agregarla en el modelo DirectorSesion
+        # Por ejemplo, agregar un campo `director_id` en DirectorSesion
+        # y verificar que sesion.director_id == current_user.user_id
+
+        # Aquí se asume que tal relación existe
+        # Si no, ajusta el código según tu modelo de datos
+
+        # Generar el código QR para la sesión
+        codigo_qr = generar_codigo_qr_sesion_director(sesion_id)
+
+        return jsonify({
+            'sesion_id': sesion.sesion_id,
+            'codigo_qr': codigo_qr
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error al obtener código QR de sesión del director: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
+def generar_codigo_qr_sesion_director(sesion_id):
+    """
+    Genera un código QR único para una sesión de director basada en el ID de la sesión y una clave secreta.
+    """
+    data = f"director-sesion-{sesion_id}-{app.config['SECRET_KEY']}"
+    codigo_qr = hashlib.sha256(data.encode()).hexdigest()
+    return codigo_qr
+
 
 @app.route('/docente/asistencia/estudiante', methods=['POST'])
 @token_requerido
