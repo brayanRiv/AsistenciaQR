@@ -180,8 +180,6 @@ def role_required(roles):
 def index():
     return jsonify({'mensaje': 'Bienvenido a la API de Asistencia QR!'}), 200
 
-# Ruta de registro
-# Ruta de registro
 @app.route('/registro', methods=['POST'])
 def registro():
     try:
@@ -197,7 +195,7 @@ def registro():
         if Usuario.query.filter_by(email=email).first():
             return jsonify({'mensaje': 'El email ya está registrado!'}), 400
 
-        # Generar código QR único
+        # Generar código QR único para el carnet
         codigo_qr = generar_codigo_qr_unico_estudiante(email)
 
         nuevo_usuario = Usuario(
@@ -205,16 +203,17 @@ def registro():
             apellido=apellido,
             email=email,
             rol='estudiante',
-            codigo_qr=codigo_qr  # Guardar el código QR
+            codigo_qr=codigo_qr
         )
         nuevo_usuario.set_password(password)
         db.session.add(nuevo_usuario)
         db.session.commit()
 
-        return jsonify({'mensaje': 'Usuario registrado exitosamente!', 'codigo_qr': codigo_qr}), 201
+        return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
     except Exception as e:
         app.logger.error(f"Error en registro: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
 
 def generar_codigo_qr_unico_estudiante(email):
     """
@@ -333,6 +332,10 @@ def login():
         if not usuario or not usuario.check_password(password):
             return jsonify({'mensaje': 'Credenciales inválidas!'}), 401
 
+        # Actualizar el campo ultimo_login
+        usuario.ultimo_login = datetime.now(timezone.utc)
+        db.session.commit()
+
         token = pyjwt.encode({
             'user_id': usuario.user_id,
             'exp': datetime.now(timezone.utc) + timedelta(hours=24)
@@ -342,6 +345,7 @@ def login():
     except Exception as e:
         app.logger.error(f"Error en login: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
 
 # Ruta protegida
 @app.route('/protegido', methods=['GET'])
