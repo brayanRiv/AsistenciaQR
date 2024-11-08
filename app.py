@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -17,6 +17,12 @@ from flask_limiter.util import get_remote_address
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
+from PIL import Image, ImageDraw
+from flask import render_template_string, abort
+import base64
+import segno
+from flask import make_response
+
 
 app = Flask(__name__)
 
@@ -31,6 +37,16 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fe4d61b2ad570a03abc4910
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
+
+@app.after_request
+def add_header(response):
+    """
+    Añade cabeceras para evitar el cacheo de respuestas sensibles.
+    """
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 # Configuración de Rate Limiting
 limiter = Limiter(
@@ -1028,6 +1044,117 @@ def obtener_nombre_dia_espanol(fecha):
     }
     dia_semana = fecha.weekday()  # Devuelve un número de 0 (lunes) a 6 (domingo)
     return dias_semana.get(dia_semana, '')
+
+
+def generar_imagen_qr_con_logo(codigo_qr):
+    # Crear QR Code con segno
+    qr = segno.make(codigo_qr, error='h')  # Alto nivel de corrección de errores
+
+    # Guardar el QR a BytesIO
+    buffered = BytesIO()
+    qr.save(buffered, kind='png', scale=10)
+    qr_img = Image.open(buffered).convert('RGB')
+
+    # Cargar el logo
+    logo_path = os.path.join('static', 'logo.png')
+    if not os.path.exists(logo_path):
+        raise FileNotFoundError(f"Logo no encontrado en la ruta: {logo_path}")
+    logo = Image.open(logo_path)
+
+    # Calcular el tamaño del logo (20% del tamaño del QR)
+    qr_width, qr_height = qr_img.size
+    logo_size = int(qr_width * 0.2)
+    try:
+        # Intentar usar Resampling.LANCZOS, si no está disponible, usar ANTIALIAS
+        logo = logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+    except AttributeError:
+        logo = logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+
+    # Crear una máscara circular para el logo
+    mask = Image.new('L', (logo_size, logo_size), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, logo_size, logo_size), fill=255)
+    logo.putalpha(mask)
+
+    # Opcional: Agregar un borde blanco alrededor del logo para mejor visibilidad
+    border_size = int(logo_size * 0.05)  # 5% del tamaño del logo
+    bordered_logo_size = logo_size + 2 * border_size
+    bordered_logo = Image.new('RGBA', (bordered_logo_size, bordered_logo_size), (255, 255, 255, 0))
+    bordered_logo.paste(logo, (border_size, border_size), logo)
+
+    # Posicionar el logo en el centro del QR
+    pos = ((qr_width - bordered_logo_size) // 2, (qr_height - bordered_logo_size) // 2)
+    qr_img.paste(bordered_logo, pos, bordered_logo)
+
+    return qr_img
+
+
+
+
+@app.route('/docente/asistencia/codigo/view', methods=['GET'])
+@token_requerido
+@role_required(['docente'])
+def ver_codigo_qr_docente(current_user):
+    try:
+        # Verificar sesión activa del director
+        lima_timezone = timezone(timedelta(hours=-5))
+        current_date = datetime.now(lima_timezone).date()
+
+        sesion_director = DirectorSesion.query.filter_by(fecha_sesion=current_date, activa=True).first()
+        if not sesion_director:
+            abort(404, description='No hay una sesión activa para hoy.')
+
+        # Generar el código QR dinámico
+        codigo_qr = generar_codigo_qr_dinamico_docente(current_user.user_id)
+
+        # Crear imagen del código QR con logo
+        qr_image = generar_imagen_qr_con_logo(codigo_qr)
+
+        # Convertir imagen a base64
+        buffered = BytesIO()
+        qr_image.save(buffered, format="PNG")
+        qr_code_b64 = base64.b64encode(buffered.getvalue()).decode()
+
+        # Renderizar plantilla
+        return render_template('qr_view.html', qr_code=qr_code_b64)
+
+    except Exception as e:
+        app.logger.error(f"Error al mostrar código QR para docente: {str(e)}")
+        abort(500)
+
+@app.route('/director/sesion/<int:sesion_id>/codigo/view', methods=['GET'])
+@token_requerido
+@role_required(['director'])
+def ver_codigo_qr_sesion_director(current_user, sesion_id):
+    try:
+        # Obtener la sesión
+        sesion = DirectorSesion.query.get(sesion_id)
+        if not sesion or not sesion.activa:
+            abort(404, description='Sesión no encontrada o inactiva.')
+
+        # Generar el código QR dinámico
+        codigo_qr = generar_codigo_qr_sesion_director(sesion_id)
+
+        # Crear imagen del código QR con logo
+        qr_image = generar_imagen_qr_con_logo(codigo_qr)
+
+        # Convertir imagen a base64
+        buffered = BytesIO()
+        qr_image.save(buffered, format="PNG")
+        qr_code_b64 = base64.b64encode(buffered.getvalue()).decode()
+
+        # Renderizar plantilla
+        return render_template('qr_view.html', qr_code=qr_code_b64)
+
+    except Exception as e:
+        app.logger.error(f"Error al mostrar código QR para sesión del director: {str(e)}")
+        abort(500)
+
+
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('404.html'), 404
+
 
 if __name__ == '__main__':
     app.run(debug=True)
