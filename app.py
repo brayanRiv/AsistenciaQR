@@ -21,8 +21,6 @@ from PIL import Image, ImageDraw
 from flask import render_template_string, abort
 import base64
 import segno
-from flask import make_response
-
 
 app = Flask(__name__)
 
