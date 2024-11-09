@@ -1,12 +1,14 @@
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv()  # Carga las variables del .env antes de acceder a os.environ
 
-from flask import Flask, request, jsonify, send_file, render_template
+import os
+import re
+from flask import Flask, request, jsonify, send_file, render_template, abort, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
-import os
-import jwt as pyjwt  # Importar con alias para evitar conflictos
+import uuid
+import jwt as pyjwt
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from io import BytesIO
@@ -18,42 +20,84 @@ from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
 from PIL import Image, ImageDraw
-from flask import render_template_string, abort
 import base64
 import segno
+import secrets
+from marshmallow import Schema, fields, validate, ValidationError
+from flask_wtf import CSRFProtect
+from flasgger import Swagger
+from flask_talisman import Talisman
+from werkzeug.middleware.proxy_fix import ProxyFix
 
+# **1. Crear la instancia de Flask**
 app = Flask(__name__)
 
-# Configuración de la base de datos
+# **2. Configurar SECRET_KEY**
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
+if not app.config['SECRET_KEY']:
+    raise ValueError("No se ha establecido SECRET_KEY para la aplicación Flask")
+
+# **3. Configuraciones adicionales que dependen de SECRET_KEY**
+app.config['WTF_CSRF_SECRET_KEY'] = app.config['SECRET_KEY']
+
+# **4. Configuración de cookies seguras**
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
+
+# **5. Inicializar extensiones y middleware**
+Talisman(app, content_security_policy=None)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+csrf = CSRFProtect(app)
+swagger = Swagger(app)
+
+# **6. Configuración de registro en producción**
+if not app.debug:
+    import logging
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler('error.log', maxBytes=10240, backupCount=10)
+    formatter = logging.Formatter(
+        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]')
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.ERROR)
+    app.logger.addHandler(file_handler)
+
+# **7. Establecer encabezados de seguridad**
+@app.after_request
+def set_security_headers(response):
+    response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:;"
+    return response
+
+# **8. Configuración de la base de datos**
 database_url = os.environ.get('DATABASE_URL')
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fe4d61b2ad570a03abc4910e9d10362f1e3a24ce334d8b22')
 
+# **9. Inicializar extensiones de base de datos**
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
+# **10. Configuración de Rate Limiting**
+limiter = Limiter(
+key_func=get_remote_address,
+default_limits=["200 per day", "50 per hour"]
+)
+
+
+# **11. Evitar cacheo de respuestas sensibles**
 @app.after_request
 def add_header(response):
-    """
-    Añade cabeceras para evitar el cacheo de respuestas sensibles.
-    """
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
 
-# Configuración de Rate Limiting
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
-)
-
-limiter.init_app(app)
-# Modelos
+# Resto de tu código (modelos, rutas, etc.)
 
 class Usuario(db.Model):
     __tablename__ = 'usuario'
@@ -148,8 +192,29 @@ class AsistenciaDocente(db.Model):
     fecha_asistencia = db.Column(db.Date, nullable=False)
     hora_entrada = db.Column(db.Time)
     hora_salida = db.Column(db.Time)
-
     usuario = db.relationship('Usuario', backref=db.backref('asistencias_docentes', lazy=True))
+
+class TokenRevocado(db.Model):
+    __tablename__ = 'tokens_revocados'
+    id = db.Column(db.Integer, primary_key=True)
+    jti = db.Column(db.String(120), nullable=False)
+
+class RegistroSchema(Schema):
+    nombre = fields.String(required=True, validate=validate.Length(min=1))
+    apellido = fields.String(required=True, validate=validate.Length(min=1))
+    email = fields.Email(required=True)
+    password = fields.String(required=True, validate=validate.Length(min=8))
+
+class LoginSchema(Schema):
+    email = fields.Email(required=True)
+    password = fields.String(required=True, validate=validate.Length(min=8))
+
+class CrearUsuarioSchema(Schema):
+    nombre = fields.String(required=True, validate=validate.Length(min=1))
+    apellido = fields.String(required=True, validate=validate.Length(min=1))
+    email = fields.Email(required=True)
+    password = fields.String(required=True, validate=validate.Length(min=8))
+    rol = fields.String(required=True, validate=validate.OneOf(['docente', 'director']))
 
 # Decorador para rutas protegidas
 def token_requerido(f):
@@ -165,6 +230,11 @@ def token_requerido(f):
             return jsonify({'mensaje': 'Token está ausente!'}), 401
         try:
             data = pyjwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            jti = data['jti']
+            # Verificar si el token ha sido revocado
+            token_revocado = TokenRevocado.query.filter_by(jti=jti).first()
+            if token_revocado:
+                return jsonify({'mensaje': 'Token revocado!'}), 401
             current_user = Usuario.query.filter_by(user_id=data['user_id']).first()
             if not current_user:
                 return jsonify({'mensaje': 'Usuario no encontrado!'}), 401
@@ -173,6 +243,7 @@ def token_requerido(f):
         except pyjwt.InvalidTokenError:
             return jsonify({'mensaje': 'Token inválido!'}), 401
         except Exception as e:
+            db.session.rollback()
             app.logger.error(f"Error al decodificar el token: {str(e)}")
             return jsonify({'mensaje': 'Error interno del servidor!'}), 500
         return f(current_user, *args, **kwargs)
@@ -195,13 +266,22 @@ def index():
     return jsonify({'mensaje': 'Bienvenido a la API de Asistencia QR!'}), 200
 
 @app.route('/registro', methods=['POST'])
+@limiter.limit("5 per minute")
 def registro():
     try:
         data = request.get_json()
+        schema = RegistroSchema()
+        result = schema.load(data)
         nombre = data.get('nombre')
         apellido = data.get('apellido')
         email = data.get('email')
         password = data.get('password')
+
+        # Validar complejidad de la contraseña
+        if len(password) < 8 or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password) \
+                or not re.search(r"[0-9]", password) or not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+            return jsonify({
+                               'mensaje': 'La contraseña debe tener al menos 8 caracteres, incluyendo mayúsculas, minúsculas, números y símbolos.'}), 400
 
         if not all([nombre, apellido, email, password]):
             return jsonify({'mensaje': 'Faltan datos!'}), 400
@@ -209,8 +289,11 @@ def registro():
         if Usuario.query.filter_by(email=email).first():
             return jsonify({'mensaje': 'El email ya está registrado!'}), 400
 
-        # Generar código QR único para el carnet
-        codigo_qr = generar_codigo_qr_unico_estudiante(email)
+        if len(password) < 8 or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password) \
+                or not re.search(r"[0-9]", password) or not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+            return jsonify({'mensaje': 'La contraseña debe tener al menos 8 caracteres, incluyendo mayúsculas, minúsculas, números y símbolos.'}), 400
+
+        codigo_qr = generar_codigo_qr_unico_estudiante()
 
         nuevo_usuario = Usuario(
             nombre=nombre,
@@ -224,17 +307,16 @@ def registro():
         db.session.commit()
 
         return jsonify({'mensaje': 'Usuario registrado exitosamente!'}), 201
+    except ValidationError as err:
+        return jsonify({'mensaje': 'Datos inválidos!', 'errores': err.messages}), 400
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error en registro: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
 
-def generar_codigo_qr_unico_estudiante(email):
-    """
-    Genera un código QR único para un estudiante basado en su email y una clave secreta.
-    """
-    data = f"{email}-{app.config['SECRET_KEY']}"
-    codigo_qr = hashlib.sha256(data.encode()).hexdigest()
+def generar_codigo_qr_unico_estudiante():
+    codigo_qr = secrets.token_urlsafe(32)
     return codigo_qr
 
 def verificar_sesion_activa(sesion_qr, current_datetime):
@@ -278,6 +360,7 @@ def obtener_codigo_qr_sesion_director(current_user, sesion_id):
         }), 200
 
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener código QR de sesión del director: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -329,6 +412,7 @@ def registrar_asistencia_estudiante_por_docente(current_user):
         return jsonify(response), status_code
 
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al registrar asistencia del estudiante por docente: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -339,17 +423,14 @@ def registrar_asistencia_estudiante_por_docente(current_user):
 def crear_usuario_por_admin(current_user):
     try:
         data = request.get_json()
-        nombre = data.get('nombre')
-        apellido = data.get('apellido')
-        email = data.get('email')
-        password = data.get('password')
-        rol = data.get('rol')
+        schema = CrearUsuarioSchema()
+        result = schema.load(data)
 
-        if not all([nombre, apellido, email, password, rol]):
-            return jsonify({'mensaje': 'Faltan datos!'}), 400
-
-        if rol not in ['docente', 'director']:
-            return jsonify({'mensaje': 'Rol inválido! Solo puedes crear docentes o directores.'}), 400
+        nombre = result['nombre']
+        apellido = result['apellido']
+        email = result['email']
+        password = result['password']
+        rol = result['rol']
 
         if Usuario.query.filter_by(email=email).first():
             return jsonify({'mensaje': 'El email ya está registrado!'}), 400
@@ -365,21 +446,25 @@ def crear_usuario_por_admin(current_user):
         db.session.commit()
 
         return jsonify({'mensaje': f'Usuario {rol} creado exitosamente!'}), 201
+    except ValidationError as err:
+        return jsonify({'mensaje': 'Datos inválidos!', 'errores': err.messages}), 400
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al crear usuario por admin: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+        return jsonify({'mensaje': 'Error interno del servidor.'}), 500
 
 
 # Ruta de login
 @app.route('/login', methods=['POST'])
+@limiter.limit("5 per minute")
 def login():
     try:
         data = request.get_json()
-        email = data.get('email')
-        password = data.get('password')
+        schema = LoginSchema()
+        result = schema.load(data)
 
-        if not all([email, password]):
-            return jsonify({'mensaje': 'Faltan datos!'}), 400
+        email = result['email']
+        password = result['password']
 
         usuario = Usuario.query.filter_by(email=email).first()
         if not usuario or not usuario.check_password(password):
@@ -395,10 +480,11 @@ def login():
         }, app.config['SECRET_KEY'], algorithm="HS256")
 
         return jsonify({'token': token}), 200
+    except ValidationError as err:
+        return jsonify({'mensaje': 'Datos inválidos!', 'errores': err.messages}), 400
     except Exception as e:
         app.logger.error(f"Error en login: {str(e)}")
-        return jsonify({'mensaje': 'Error interno del servidor!'}), 500
-
+        return jsonify({'mensaje': 'Error interno del servidor.'}), 500
 
 # Ruta protegida
 @app.route('/protegido', methods=['GET'])
@@ -429,9 +515,19 @@ def crear_aula(current_user):
 
         return jsonify({'mensaje': 'Aula creada exitosamente!'}), 201
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al crear aula: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
+@app.route('/logout', methods=['POST'])
+@token_requerido
+def logout(current_user):
+    token = request.headers['Authorization'].split(" ")[1]
+    jti = pyjwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])['jti']
+    nuevo_token_revocado = TokenRevocado(jti=jti)
+    db.session.add(nuevo_token_revocado)
+    db.session.commit()
+    return jsonify({'mensaje': 'Sesión cerrada exitosamente!'}), 200
 @app.route('/aulas', methods=['GET'])
 @token_requerido
 def obtener_aulas(current_user):
@@ -448,6 +544,7 @@ def obtener_aulas(current_user):
             resultado.append(aula_data)
         return jsonify({'aulas': resultado}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener aulas: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -467,6 +564,7 @@ def obtener_aula(current_user, aula_id):
         }
         return jsonify({'aula': aula_data}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener aula: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -496,6 +594,7 @@ def actualizar_aula(current_user, aula_id):
         db.session.commit()
         return jsonify({'mensaje': 'Aula actualizada exitosamente!'}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al actualizar aula: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -512,6 +611,7 @@ def eliminar_aula(current_user, aula_id):
         db.session.commit()
         return jsonify({'mensaje': 'Aula eliminada exitosamente!'}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al eliminar aula: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -534,6 +634,7 @@ def crear_sesion_director(current_user):
 
         return jsonify({'mensaje': 'Sesión de director creada exitosamente!', 'sesion_id': nueva_sesion.sesion_id}), 201
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al crear sesión de director: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -595,6 +696,7 @@ def registrar_asistencia_docente(current_user):
 
         return jsonify({'mensaje': f'Hora de {accion} registrada exitosamente!'}), 201
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al registrar asistencia de docente: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -617,6 +719,7 @@ def obtener_codigo_qr_docente(current_user):
 
         return jsonify({'codigo_qr': codigo_qr}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener código QR para docente: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -679,11 +782,11 @@ def crear_sesion_qr(current_user):
         app.logger.error(f"Error de base de datos al crear sesión QR: {str(e)}")
         return jsonify({'mensaje': f'Error de base de datos: {str(e)}'}), 500
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al crear sesión QR: {str(e)}")
-        return jsonify({'mensaje': f'Error interno del servidor: {str(e)}'}), 500
+        return jsonify({'mensaje': 'Error interno del servidor.'}), 500
 
 def generate_unique_qr_code():
-    import uuid
     return str(uuid.uuid4())
 
 def generar_codigo_qr_dinamico(entity_id, entity_type):
@@ -733,6 +836,7 @@ def obtener_codigo_qr(current_user, sesion_id):
 
         return jsonify({'codigo_qr': codigo_qr}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener código QR: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -775,6 +879,7 @@ def registrar_asistencia(current_user):
         return jsonify(response), status_code
 
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al registrar asistencia: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -856,6 +961,7 @@ def obtener_asistencias(current_user):
             resultado.append(asistencia_data)
         return jsonify({'asistencias': resultado}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener asistencias: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -878,6 +984,7 @@ def obtener_leaderboard(current_user):
             resultado.append(entry_data)
         return jsonify({'leaderboard': resultado}), 200
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al obtener leaderboard: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
@@ -1027,8 +1134,9 @@ def exportar_asistencias(current_user):
             download_name=filename
         )
     except Exception as e:
-        app.logger.error(f"Error al exportar asistencias: {str(e)}")
-        return jsonify({'mensaje': f'Error interno del servidor: {str(e)}'}), 500
+        db.session.rollback()
+        app.logger.error(f"Error al crear sesión QR: {str(e)}")
+        return jsonify({'mensaje': 'Error interno del servidor.'}), 500
 
 def obtener_nombre_dia_espanol(fecha):
     dias_semana = {
@@ -1117,6 +1225,7 @@ def ver_codigo_qr_docente(current_user):
         return render_template('qr_view.html', qr_code=qr_code_b64)
 
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al mostrar código QR para docente: {str(e)}")
         abort(500)
 
@@ -1145,6 +1254,7 @@ def ver_codigo_qr_sesion_director(current_user, sesion_id):
         return render_template('qr_view.html', qr_code=qr_code_b64)
 
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Error al mostrar código QR para sesión del director: {str(e)}")
         abort(500)
 
@@ -1153,6 +1263,5 @@ def ver_codigo_qr_sesion_director(current_user, sesion_id):
 def page_not_found(e):
     return render_template('404.html'), 404
 
-
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run()
