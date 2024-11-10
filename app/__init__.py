@@ -3,7 +3,6 @@ load_dotenv()
 
 import os
 from flask import Flask, request, render_template
-from flask_limiter.util import get_remote_address
 from flasgger import Swagger
 from flask_talisman import Talisman
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -30,7 +29,7 @@ def create_app():
         SESSION_COOKIE_SAMESITE='Lax',
     )
 
-    # Configuración de Flask-Limiter
+    # **Configuración de Flask-Limiter**
     redis_url = os.environ.get('REDIS_URL')
     if redis_url:
         limiter.init_app(app, storage_uri=redis_url)
@@ -41,7 +40,7 @@ def create_app():
     Talisman(app, content_security_policy=None)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
     csrf.init_app(app)
-    limiter.init_app(app)
+    # limiter.init_app(app)  # <-- Eliminado para evitar duplicación
     swagger = Swagger(app)
 
     # **6. Configuración de registro en producción**
@@ -62,8 +61,8 @@ def create_app():
         return response
 
     # **8. Configuración de la base de datos**
-    database_url = os.environ.get('DATABASE_URL')
-    if database_url and database_url.startswith("postgres://"):
+    database_url = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
+    if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
 
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
@@ -84,7 +83,7 @@ def create_app():
     @app.before_request
     def csrf_protection():
         # Exime rutas que no necesitan CSRF por el uso de tokens JWT
-        if request.endpoint in ['auth_bp.login', 'auth_bp.registro', 'auth_bp.logout'] or request.endpoint.startswith('api.'):
+        if request.endpoint in ['auth_bp.login', 'auth_bp.registro', 'auth_bp.logout'] or (request.endpoint and request.endpoint.startswith('api.')):
             # No aplicar CSRF en rutas de API o autenticación con JWT
             csrf._disable_csrf = True
         else:
