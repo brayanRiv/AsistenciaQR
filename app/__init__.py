@@ -1,10 +1,8 @@
-# app/__init__.py
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 from flask import Flask, request, render_template
-from flask_limiter.util import get_remote_address
 from flasgger import Swagger
 from flask_talisman import Talisman
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -28,7 +26,7 @@ def create_app():
         SESSION_COOKIE_SAMESITE='Lax',
     )
 
-    # Configuración de Flask-Limiter
+    # **Configuración de Flask-Limiter**
     redis_url = os.environ.get('REDIS_URL', 'memory://')
     app.config['RATELIMIT_STORAGE_URI'] = redis_url
 
