@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app
 from app.models import Usuario, TokenRevocado
 from app.schemas import LoginSchema, RegistroSchema
-from app.extensions import db, csrf
+from app.extensions import db
 from app import limiter
 import jwt as pyjwt
 from datetime import datetime, timezone, timedelta
@@ -18,7 +18,6 @@ auth_bp = Blueprint('auth_bp', __name__)
 # Ya no necesitamos crear una nueva instancia de Limiter
 # limiter = Limiter()  # Eliminar esta línea
 
-@csrf.exempt
 @auth_bp.route('/login', methods=['POST'])
 @limiter.limit("5 per minute")
 def login():
@@ -50,7 +49,6 @@ def login():
         current_app.logger.error(f"Error en login: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor.'}), 500
 
-@csrf.exempt
 @auth_bp.route('/registro', methods=['POST'])
 @limiter.limit("5 per minute")
 def registro():
@@ -97,7 +95,6 @@ def registro():
         current_app.logger.error(f"Error en registro: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
 
-@csrf.exempt
 @auth_bp.route('/logout', methods=['POST'])
 @token_requerido
 def logout():

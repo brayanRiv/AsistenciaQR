@@ -8,7 +8,7 @@ from flask_talisman import Talisman
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Importar las extensiones
-from .extensions import db, migrate, csrf, limiter
+from .extensions import db, migrate, limiter
 
 def create_app():
     app = Flask(__name__)
@@ -19,7 +19,6 @@ def create_app():
         raise ValueError("No se ha establecido SECRET_KEY para la aplicación Flask")
 
     # Configuraciones adicionales
-    app.config['WTF_CSRF_SECRET_KEY'] = app.config['SECRET_KEY']
     app.config.update(
         SESSION_COOKIE_SECURE=True,
         SESSION_COOKIE_HTTPONLY=True,
@@ -33,7 +32,6 @@ def create_app():
     # Inicializar extensiones y middleware
     Talisman(app, content_security_policy=None)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-    csrf.init_app(app)
     limiter.init_app(app)
     swagger = Swagger(app)
 
@@ -73,12 +71,6 @@ def create_app():
         response.headers['Expires'] = '0'
         return response
 
-    @app.before_request
-    def csrf_protection():
-        if request.endpoint in ['auth_bp.login', 'auth_bp.registro', 'auth_bp.logout'] or (request.endpoint and request.endpoint.startswith('api.')):
-            csrf._disable_csrf = True
-        else:
-            csrf._disable_csrf = False
 
     # Registrar Blueprints
     from app.routes import register_routes
