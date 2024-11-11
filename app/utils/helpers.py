@@ -153,3 +153,16 @@ def registrar_asistencia_estudiante(estudiante_id, sesion_qr, current_datetime):
 
 def generate_unique_qr_code():
     return str(uuid.uuid4())
+
+import jwt
+import uuid
+from datetime import datetime, timedelta
+
+def generar_token(usuario_id, clave_secreta):
+    payload = {
+        'user_id': usuario_id,
+        'exp': datetime.utcnow() + timedelta(days=1),
+        'jti': str(uuid.uuid4())  # Añade un identificador único al token
+    }
+    token = jwt.encode(payload, clave_secreta, algorithm='HS256')
+    return token

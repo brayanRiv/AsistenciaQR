@@ -1,3 +1,5 @@
+import uuid
+
 from flask import Blueprint, request, jsonify, current_app
 from app.models import Usuario, TokenRevocado
 from app.schemas import LoginSchema, RegistroSchema
@@ -37,9 +39,13 @@ def login():
         usuario.ultimo_login = datetime.now(timezone.utc)
         db.session.commit()
 
+        # Generar un 'jti' único para el token
+        jti = str(uuid.uuid4())
+
         token = pyjwt.encode({
             'user_id': usuario.user_id,
-            'exp': datetime.now(timezone.utc) + timedelta(hours=24)
+            'exp': datetime.now(timezone.utc) + timedelta(hours=24),
+            'jti': jti
         }, current_app.config['SECRET_KEY'], algorithm="HS256")
 
         return jsonify({'token': token}), 200
@@ -98,7 +104,6 @@ def registro():
 @auth_bp.route('/logout', methods=['POST'])
 @token_requerido
 def logout():
-
     try:
         token = request.headers['Authorization'].split(" ")[1]
         jti = pyjwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])['jti']
@@ -110,3 +115,4 @@ def logout():
         db.session.rollback()
         current_app.logger.error(f"Error en logout: {str(e)}")
         return jsonify({'mensaje': 'Error interno del servidor!'}), 500
+
