@@ -49,10 +49,10 @@
         <img src="data:image/png;base64,{{ qr_code }}" alt="Código QR">
     </div>
     <script>
-        // Recargar la página cada 1 minuto para actualizar el QR Code
-        setTimeout(function(){
+        // Recargar la página cada 5 minutos para actualizar el QR Code
+         setTimeout(function(){
             window.location.reload();
-        }, 60000);
+         }, 60000); // 60,000 ms = 1 minuto
     </script>
 </body>
 </html>
