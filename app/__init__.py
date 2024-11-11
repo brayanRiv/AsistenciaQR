@@ -11,8 +11,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from .extensions import db, migrate, limiter
 
 def create_app():
-    app = Flask(__name__, template_folder = 'MiAsistencia/templates')
-
+    app = Flask(__name__)
     # Configurar SECRET_KEY
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
     if not app.config['SECRET_KEY']:
