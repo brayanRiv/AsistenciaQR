@@ -1,7 +1,8 @@
 from flask import Blueprint, request, jsonify, current_app
 from app.models import Usuario, TokenRevocado
 from app.schemas import LoginSchema, RegistroSchema
-from app.extensions import db, csrf, limiter
+from app.extensions import db, csrf
+from app import limiter
 import jwt as pyjwt
 from datetime import datetime, timezone, timedelta
 
