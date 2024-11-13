@@ -44,6 +44,7 @@ def login():
 
         token = pyjwt.encode({
             'user_id': usuario.user_id,
+            'rol': usuario.rol,
             'exp': datetime.now(timezone.utc) + timedelta(hours=24),
             'jti': jti
         }, current_app.config['SECRET_KEY'], algorithm="HS256")
